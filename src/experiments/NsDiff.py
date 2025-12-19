@@ -157,7 +157,7 @@ class NsDiffForecast(ProbForecastExp, NsDiffParameters):
         self.cond_pred_model_g = G.SigmaEstimation(self.windows, self.pred_len, self.dataset.num_features, 512, self.rolling_length).float().to(self.device)
         
         if self.load_pretrain:
-            model_f_path = f"./results/runs/F/{self.dataset_type}/w{self.windows}h1s{self.pred_len}/1/best_model.pth"
+            model_f_path = f"./results/runs/F/{self.dataset_type}/w{self.windows}h1s{self.pred_len}/2/best_model.pth"
             model_g_path = f"./results/runs/G/{self.dataset_type}/w{self.windows}h1s{self.pred_len}/1/best_model.pth"
             print("using pretrained model...")
             print(f"f(x): {model_f_path}")

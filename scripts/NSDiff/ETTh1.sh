@@ -7,7 +7,8 @@ python3 ./src/experiments/NsDiff.py \
    --horizon=1 \
    --pred_len=192 \
    --windows=168 \
-   --load_pretrain=False \
+   --rolling_length=24 \
+   --load_pretrain=True \
    --epochs=10 \
    --patience=5 \
    runs --seeds='[1232132, 3]'

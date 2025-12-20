@@ -11,20 +11,25 @@ NsDiff/
 ├── 📁 configs/                          # 配置文件目录
 │   ├── csbi.yaml                        # CSBI模型配置
 │   ├── nsdiff.yml                       # NsDiff主模型配置
-│   └── tmdm.yml                         # TMDM模型配置
+│   ├── tmdm.yml                         # TMDM模型配置
+│   └── ireflow.yaml                     # iReflow模型配置 ⭐新增
 │
 ├── 📁 data/                             # 数据目录
 │   └── ETTh1/                           # ETTh1数据集（自动下载）
 │
 ├── 📁 docs/                             # 文档目录
 │   ├── _static/                         # 静态资源
-│   └── MODIFICATIONS.md                 # 修改记录
+│   ├── MODIFICATIONS.md                 # 修改记录
+│   └── iReflow_README.md                # iReflow模型文档 ⭐新增
 │
 ├── 📁 fig/                              # 图片资源目录
 │   └── overview.jpg                     # 项目概览图
 │
 ├── 📁 notebooks/                        # Jupyter笔记本目录
 │   └── uncertainty_variation.ipynb      # 不确定性变化分析
+│
+├── 📁 examples/                         # 示例代码目录 ⭐新增
+│   └── ireflow_inference_example.py     # iReflow推理示例
 │
 ├── 📁 results/                          # 实验结果目录
 │   └── runs/                            # 运行结果
@@ -36,6 +41,9 @@ NsDiff/
 │   ├── CSDI/                            # CSDI模型运行脚本
 │   ├── D3VAE/                           # D3VAE模型运行脚本
 │   ├── DiffusionTS/                     # DiffusionTS模型运行脚本
+│   ├── iReflow/                         # iReflow模型运行脚本 ⭐新增
+│   │   ├── ETTh1.sh                     # ETTh1数据集脚本
+│   │   └── ETTm2.sh                     # ETTm2数据集脚本
 │   ├── NSDiff/                          # NsDiff主模型运行脚本
 │   │   ├── ETTh1.sh                     # ETTh1数据集脚本
 │   │   ├── ETTh2.sh                     # ETTh2数据集脚本
@@ -67,6 +75,7 @@ NsDiff/
 │   │   ├── __init__.py
 │   │   ├── NsDiff.py                    # NsDiff主实验脚本 ⭐
 │   │   ├── NsDiff_PE.py                 # NsDiff位置编码版本
+│   │   ├── iReflow.py                   # iReflow实验脚本 ⭐新增
 │   │   ├── pretrain_f.py                # F模型预训练脚本
 │   │   ├── pretrain_g.py                # G模型预训练脚本
 │   │   ├── prob_forecast.py             # 概率预测基类
@@ -105,6 +114,8 @@ NsDiff/
 │   ├── 📁 models/                       # 模型定义模块
 │   │   ├── __init__.py
 │   │   ├── NsDiff.py                    # NsDiff主模型 ⭐
+│   │   ├── iReflow.py                   # iReflow主模型 ⭐新增
+│   │   ├── iTransformer.py              # iTransformer模型 ⭐新增
 │   │   ├── CSBI.py                      # CSBI模型
 │   │   ├── CSDI.py                      # CSDI模型
 │   │   ├── D3VAE.py                     # D3VAE模型
@@ -117,6 +128,10 @@ NsDiff/
 │   │
 │   ├── 📁 nn/                           # 神经网络组件模块
 │   │   ├── __init__.py
+│   │   ├── velocity_network.py          # iReflow速度场网络 ⭐新增
+│   │   ├── iTransformer_EncDec.py       # iTransformer编码器/解码器 ⭐新增
+│   │   ├── iTransformer_Embed.py        # iTransformer嵌入层 ⭐新增
+│   │   ├── iTransformer_SelfAttention_Family.py  # iTransformer注意力机制 ⭐新增
 │   │   ├── csbi_*.py                    # CSBI相关组件（数据、扩散、损失、网络、策略、SDE、工具）
 │   │   ├── d3vae_*.py                   # D3VAE相关组件（扩散、嵌入、编码器、操作、工具）
 │   │   ├── diffusionts_*.py             # DiffusionTS相关组件（高斯扩散、模型工具、Transformer）
@@ -261,4 +276,143 @@ bash ./scripts/NSDiff/ETTh1.sh
 - `results/runs/F/ETTh1/` - F模型结果
 - `results/runs/G/ETTh1/` - G模型结果
 - `results/runs/NsDiff/ETTh1/` - NsDiff完整模型结果
+
+---
+
+## ⭐ iReflow模型 (新增)
+
+### 概述
+**iReflow** (Rectified Flow with Inverted Variate-Awareness) 是一个创新的概率时间序列预测框架，结合了iTransformer和Rectified Flow技术。
+
+### 核心特点
+
+1. **双阶段架构**：
+   - **Stage 1**: iTransformer作为Conditioner（提供点预测、变量特征、不确定性）
+   - **Stage 2**: Velocity Network作为Generator（学习速度场）
+
+2. **Residual-Centric Flow**：
+   - 起点：X_0 = y_hat + ε·σ (有噪声的预测)
+   - 终点：X_1 = y_gt (真实值)
+   - 线性插值：X_τ = τ·X_1 + (1-τ)·X_0
+
+3. **Variate-Aware设计**：
+   - 与iTransformer保持一致的变量视角
+   - Cross-Attention对齐变量特征
+   - Confidence Gating调节速度场
+
+4. **One-Step Generation**：
+   - 默认单步ODE求解
+   - 极快的推理速度
+   - 高质量的样本生成
+
+### 文件位置
+
+```
+iReflow相关文件：
+├── src/
+│   ├── models/
+│   │   ├── iReflow.py              # iReflow主模型
+│   │   └── iTransformer.py         # iTransformer基础模型
+│   ├── nn/
+│   │   ├── velocity_network.py     # 速度场网络
+│   │   ├── iTransformer_EncDec.py  # Encoder/Decoder
+│   │   ├── iTransformer_Embed.py   # 嵌入层
+│   │   └── iTransformer_SelfAttention_Family.py  # 注意力机制
+│   └── experiments/
+│       └── iReflow.py              # 实验脚本
+├── configs/
+│   └── ireflow.yaml                # 配置文件
+├── scripts/
+│   └── iReflow/
+│       ├── ETTh1.sh                # ETTh1运行脚本
+│       └── ETTm2.sh                # ETTm2运行脚本
+├── docs/
+│   └── iReflow_README.md           # 详细文档
+├── examples/
+│   └── ireflow_inference_example.py  # 推理示例
+└── test_ireflow.py                 # 快速测试脚本
+```
+
+### 快速开始
+
+#### 1. 运行测试
+```bash
+python test_ireflow.py
+```
+
+#### 2. 训练模型
+```bash
+# ETTh1数据集
+bash ./scripts/iReflow/ETTh1.sh
+
+# ETTm2数据集
+bash ./scripts/iReflow/ETTm2.sh
+```
+
+#### 3. 推理示例
+```bash
+python examples/ireflow_inference_example.py
+```
+
+### 架构流程
+
+```
+输入: X_hist [B, L, D]
+   ↓
+┌─────────────────────────────────────┐
+│  Stage 1: iTransformer (Conditioner)│
+│  • Inverted Embedding               │
+│  • Encoder (变量级Transformer)      │
+│  • Output: y_hat, H, σ              │
+└─────────────────────────────────────┘
+   ↓
+┌─────────────────────────────────────┐
+│  Stage 2: Velocity Network          │
+│  • Inverted Embedding               │
+│  • Time Injection (AdaLN)           │
+│  • Variate-Cross-Attention          │
+│  • Confidence Gating                │
+│  • Output: v (速度场)               │
+└─────────────────────────────────────┘
+   ↓
+┌─────────────────────────────────────┐
+│  ODE求解                            │
+│  X_0 = y_hat + ε·σ                 │
+│  X_pred = X_0 + v (One-step!)      │
+└─────────────────────────────────────┘
+   ↓
+输出: 预测样本 [B, num_samples, P, D]
+```
+
+### 关键创新点
+
+1. **自适应起点**: 预测不确定性σ决定噪声强度，预测越准确，起点越接近终点
+2. **变量对齐**: Cross-Attention复用iTransformer学到的变量关系，无需重新学习
+3. **置信度门控**: 根据σ调节速度场幅度，防止过度修正已准确的预测
+4. **极速采样**: 单步生成高质量样本，适合实时预测场景
+
+### 性能优势
+
+与传统方法相比，iReflow具有：
+- ✅ 更准确的不确定性估计
+- ✅ 更快的采样速度（One-step）
+- ✅ 更好的变量关系建模
+- ✅ 自适应的流构建
+
+### 主要参数
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `d_model` | 512 | 模型维度 |
+| `n_heads` | 8 | 注意力头数 |
+| `e_layers` | 2 | iTransformer编码器层数 |
+| `flow_layers` | 3 | Velocity Network层数 |
+| `num_sampling_steps` | 1 | ODE求解步数 |
+| `temperature` | 1.0 | 采样温度 |
+| `num_samples` | 100 | 测试样本数 |
+
+### 详细文档
+
+完整的使用说明、API文档和设计细节，请参考：
+📖 **`docs/iReflow_README.md`**
 

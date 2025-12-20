@@ -1,0 +1,62 @@
+# iReflow配置文件
+# Rectified Flow with Inverted Variate-Awareness for Probabilistic Time Series Forecasting
+
+model:
+  name: "iReflow"
+  
+  # iTransformer编码器配置
+  d_model: 512
+  n_heads: 8
+  e_layers: 2
+  d_ff: 2048
+  dropout: 0.1
+  embed: "timeF"
+  freq: "h"
+  activation: "gelu"
+  output_attention: false
+  use_norm: true
+  class_strategy: "projection"
+  factor: 1
+  
+  # Velocity Network配置
+  flow_layers: 3
+  
+  # Flow配置
+  num_sampling_steps: 1  # ODE求解步数（1=one-step generation）
+  temperature: 1.0       # 采样温度
+
+# 训练配置
+training:
+  batch_size: 32
+  learning_rate: 0.0001
+  epochs: 100
+  patience: 10
+  max_grad_norm: 1.0
+  
+  # 损失函数
+  loss_func_type: "mse"
+  invtrans_loss: true
+
+# 数据配置
+data:
+  dataset_type: "ETTh1"
+  data_path: "./data/"
+  windows: 168      # 历史窗口长度
+  pred_len: 192     # 预测长度
+  horizon: 1        # 预测步长
+  
+  # 数据加载
+  num_workers: 4
+  pin_memory: true
+
+# 测试配置
+testing:
+  num_samples: 100    # 生成的样本数
+  temperature: 1.0    # 采样温度
+  
+# 其他
+seed: 2021
+device: "cuda:0"
+checkpoint_dir: "./checkpoints/iReflow/"
+log_dir: "./logs/iReflow/"
+

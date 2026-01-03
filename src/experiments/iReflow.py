@@ -22,6 +22,11 @@ from torch_timeseries.utils.parse_type import parse_type
 from torch_timeseries.utils.early_stop import EarlyStopping
 import yaml
 import numpy as np
+import setproctitle
+try:
+    import wandb
+except:
+    print("Warning: wandb is not installed, some functionality may not work.")
 
 
 def dict2namespace(config):
@@ -52,6 +57,7 @@ class iReflowExp(ProbForecastExp):
     iReflow实验类
     """
     # 模型配置
+    model_type: str = "iReflow"
     d_model: int = 512
     n_heads: int = 8
     e_layers: int = 2  # iTransformer encoder层数
@@ -99,9 +105,6 @@ class iReflowExp(ProbForecastExp):
         self.model_configs.class_strategy = self.class_strategy
         self.model_configs.factor = self.factor
         self.model_configs.num_sampling_steps = self.num_sampling_steps
-        
-        # 初始化检查点路径（将在_init_model中更新为完整路径）
-        self.checkpoint_path = None
     
     def _init_model(self):
         """初始化模型"""
@@ -115,23 +118,19 @@ class iReflowExp(ProbForecastExp):
             self.model_optim, mode='min', factor=0.5, patience=5
         )
         
-        # 设置检查点路径（使用基类的run_save_dir，如果已设置）
-        if self.checkpoint_path is None:
-            if hasattr(self, 'run_save_dir') and self.run_save_dir:
-                self.checkpoint_path = os.path.join(self.run_save_dir, "best_model.pth")
-            else:
-                # 如果run_save_dir还未设置，使用临时路径（将在train中更新）
-                os.makedirs("./checkpoints/iReflow/", exist_ok=True)
-                self.checkpoint_path = "./checkpoints/iReflow/best_model.pth"
-        
-        # Early Stopping
-        self.early_stopping = iReflowEarlyStopping(
-            patience=self.patience, verbose=True, path=self.checkpoint_path
-        )
-        
         # 打印模型参数
         num_params = count_parameters(self.model)
         print(f"Model initialized with {num_params} parameters")
+    
+    def _setup_early_stopper(self):
+        """设置早停和检查点路径"""
+        self.best_checkpoint_filepath = os.path.join(
+            self.run_save_dir, "best_model.pth"
+        )
+        # Early Stopping
+        self.early_stopping = iReflowEarlyStopping(
+            patience=self.patience, verbose=True, path=self.best_checkpoint_filepath
+        )
     
     def _process_train_batch(
         self, batch_x, batch_y, batch_x_date_enc, batch_y_date_enc
@@ -212,27 +211,57 @@ class iReflowExp(ProbForecastExp):
         avg_train_loss = np.mean(train_losses)
         return avg_train_loss
     
+    def _process_val_batch(self, batch_x, batch_y, batch_x_date_enc, batch_y_date_enc):
+        """
+        处理验证/测试批次，生成样本并返回预测和真实值
+        
+        Args:
+            batch_x: [B, L, D] 历史序列
+            batch_y: [B, P, D] 未来序列（用于获取真实值）
+            batch_x_date_enc: [B, L, T] 历史时间标记
+            batch_y_date_enc: [B, P, T] 未来时间标记
+            
+        Returns:
+            preds: [B, P, D, num_samples] 预测样本
+            truths: [B, P, D] 真实值
+        """
+        # 获取当前评估时使用的样本数（如果设置了，否则使用全部样本数）
+        num_samples = getattr(self, '_num_samples_for_eval', self.num_samples)
+        
+        # 生成样本
+        samples, y_hat, sigma = self.model.forecast(
+            x_enc=batch_x,
+            x_mark_enc=batch_x_date_enc,
+            num_samples=num_samples,
+            temperature=self.temperature
+        )
+        
+        # samples: [B, num_samples, P, D]
+        # 转换维度以匹配指标期望的格式: [B, P, D, num_samples]
+        samples = samples.permute(0, 2, 3, 1)  # [B, P, D, num_samples]
+        
+        # 返回预测和真实值（注意：基类的_evaluate会处理反归一化）
+        preds = samples  # [B, P, D, num_samples]
+        truths = batch_y  # [B, P, D]
+        
+        return preds, truths
+    
     def _val(self):
-        """验证"""
+        """验证：使用较少的样本数以加快验证速度"""
+        # 设置验证时使用的样本数
+        self._num_samples_for_eval = min(self.num_samples, 20)
+        
+        # 计算验证损失（用于学习率调度）
         self.model.eval()
         val_losses = []
-        
         with torch.no_grad():
-            for i, (
-                batch_x,
-                batch_y,
-                origin_x,
-                origin_y,
-                batch_x_date_enc,
-                batch_y_date_enc,
-            ) in enumerate(self.val_loader):
-                # 转换到设备
+            for batch_x, batch_y, origin_x, origin_y, batch_x_date_enc, batch_y_date_enc in self.val_loader:
                 batch_x = batch_x.to(self.device).float()
                 batch_y = batch_y.to(self.device).float()
                 batch_x_date_enc = batch_x_date_enc.to(self.device).float()
                 batch_y_date_enc = batch_y_date_enc.to(self.device).float()
                 
-                # 前向传播（训练模式以计算损失）
+                # 计算损失
                 loss, loss_dict, y_hat = self.model(
                     x_enc=batch_x,
                     x_mark_enc=batch_x_date_enc,
@@ -241,77 +270,119 @@ class iReflowExp(ProbForecastExp):
                     y_gt=batch_y,
                     mode='train'
                 )
-                
                 val_losses.append(loss.item())
         
-        avg_val_loss = np.mean(val_losses)
-        return avg_val_loss
+        # 调用基类的_val()方法获取概率预测指标
+        result = super()._val()
+        
+        # 添加平均损失
+        result['loss'] = np.mean(val_losses)
+        
+        # 清理标志
+        delattr(self, '_num_samples_for_eval')
+        return result
     
-    def _test(self):
-        """
-        测试：生成多个样本并计算概率预测指标
-        """
-        self.model.eval()
+    def _load_best_model(self):
+        """加载最佳模型"""
+        self.model.load_state_dict(
+            torch.load(self.best_checkpoint_filepath, map_location=self.device)
+        )
+    
+    def _save_run_check_point(self, seed):
+        """保存运行检查点"""
+        if not os.path.exists(self.run_save_dir):
+            os.makedirs(self.run_save_dir)
+        print(f"Saving run checkpoint to '{self.run_save_dir}'.")
+
+        self.run_state = {
+            "model": self.model.state_dict(),
+            "current_epoch": self.current_epoch,
+            "optimizer": self.model_optim.state_dict(),
+            "rng_state": torch.get_rng_state(),
+            "early_stopping": self.early_stopping.get_state(),
+        }
+
+        torch.save(self.run_state, f"{self.run_checkpoint_filepath}")
+        print("Run state saved ... ")
+    
+    def run(self, seed=42) -> Dict[str, float]:
+        """运行实验，支持wandb追踪和检查点恢复"""
+        if self._use_wandb() and not self._init_wandb(self.project, seed): 
+            return {}
         
-        # 重置指标
-        self.metrics.reset()
+        self._setup_run(seed)
         
-        all_preds = []
-        all_trues = []
+        # 初始化数据加载器
+        self._init_data_loader()
         
-        with torch.no_grad():
-            for i, (
-                batch_x,
-                batch_y,
-                origin_x,
-                origin_y,
-                batch_x_date_enc,
-                batch_y_date_enc,
-            ) in enumerate(tqdm(self.test_loader, desc="Testing")):
-                # 转换到设备
-                batch_x = batch_x.to(self.device).float()
-                origin_y = origin_y.to(self.device).float()
-                batch_x_date_enc = batch_x_date_enc.to(self.device).float()
-                
-                # 生成多个样本
-                samples, y_hat, sigma = self.model.forecast(
-                    x_enc=batch_x,
-                    x_mark_enc=batch_x_date_enc,
-                    num_samples=self.num_samples,
-                    temperature=self.temperature
+        # 初始化模型
+        self._init_model()
+        
+        # 初始化指标
+        self._init_metrics()
+        
+        # 设置早停和检查点路径
+        self._setup_early_stopper()
+        
+        # 检查并恢复运行检查点（需要在模型初始化之后）
+        if self._check_run_exist(seed):
+            self._resume_run(seed)
+
+        self._run_print(f"run : {self.current_run} in seed: {seed}")
+
+        parameter_tables, model_parameters_num = count_parameters(self.model)
+        self._run_print(f"parameter_tables: {parameter_tables}")
+        self._run_print(f"model parameters: {model_parameters_num}")
+
+        if self._use_wandb():
+            wandb.run.summary["parameters"] = model_parameters_num
+
+        # 训练循环
+        while self.current_epoch < self.epochs:
+            epoch_start_time = time.time()
+            if self.early_stopping.early_stop is True:
+                self._run_print(
+                    f"val loss no decreased for patience={self.patience} epochs,  early stopping ...."
                 )
-                
-                # samples: [B, num_samples, P, D]
-                # 反归一化
-                if self.invtrans_loss:
-                    B, N, P, D = samples.shape
-                    samples_flat = samples.reshape(B * N, P, D)
-                    samples_flat = self.scaler.inverse_transform(samples_flat)
-                    samples = samples_flat.reshape(B, N, P, D)
-                
-                # 转换维度以匹配指标期望的格式
-                # 从 [B, num_samples, P, D] 转换为 [B, P, D, num_samples]
-                samples = samples.permute(0, 2, 3, 1)  # [B, P, D, num_samples]
-                
-                # 转移到CPU以计算指标
-                preds = samples.cpu()  # [B, P, D, num_samples]
-                truths = origin_y.cpu()  # [B, P, D]
-                
-                all_preds.append(preds)
-                all_trues.append(truths)
+                break
+
+            # 可恢复的随机性
+            reproducible(seed + self.current_epoch)
+            train_losses = self._train()
+            self._run_print(
+                "Epoch: {} cost time: {}s".format(
+                    self.current_epoch + 1, time.time() - epoch_start_time
+                )
+            )
+            self._run_print(f"Training loss : {np.mean(train_losses)}")
+
+            val_result = self._val()
+            test_result = self._test()
+
+            self.current_epoch = self.current_epoch + 1
+            
+            # 使用CRPS作为早停指标
+            self.early_stopping(val_result['crps'], self.model)
+            
+            # 学习率调度
+            self.scheduler.step(val_result['loss'])
+
+            self._save_run_check_point(seed)
+
+            if self._use_wandb():
+                wandb.log({'training_loss': np.mean(train_losses)}, step=self.current_epoch)
+                wandb.log({f"val_{k}": v for k, v in val_result.items()}, step=self.current_epoch)
+                wandb.log({f"test_{k}": v for k, v in test_result.items()}, step=self.current_epoch)
+
+        self._load_best_model()
+        best_test_result = self._test()
+        if self._use_wandb():
+            for k, v in best_test_result.items(): 
+                wandb.run.summary[f"best_test_{k}"] = v 
         
-        # 拼接所有批次
-        all_preds = torch.cat(all_preds, dim=0)  # [N_total, P, D, num_samples]
-        all_trues = torch.cat(all_trues, dim=0)  # [N_total, P, D]
-        
-        # 计算指标
-        self.metrics.update(all_preds, all_trues)
-        results = self.metrics.compute()
-        
-        # 转换为字典
-        results_dict = {k: v.item() for k, v in results.items()}
-        
-        return results_dict
+        if self._use_wandb():  
+            wandb.finish()
+        return best_test_result
     
     def train(self):
         """完整训练流程"""
@@ -331,11 +402,11 @@ class iReflowExp(ProbForecastExp):
         print("Initializing metrics...")
         self._init_metrics()
         
-        # 确保检查点路径使用run_save_dir（如果已设置）
+        # 设置早停和检查点路径（需要run_save_dir已设置）
         if hasattr(self, 'run_save_dir') and self.run_save_dir:
-            self.checkpoint_path = os.path.join(self.run_save_dir, "best_model.pth")
-            # 更新early_stopping的路径
-            self.early_stopping.path = self.checkpoint_path
+            self._setup_early_stopper()
+        else:
+            raise ValueError("run_save_dir must be set before training. Please call _setup_run(seed) first or use the run() method.")
         
         print("\nStarting training...")
         for epoch in range(self.epochs):
@@ -359,7 +430,7 @@ class iReflowExp(ProbForecastExp):
                 break
         
         # 加载最佳模型
-        self.model.load_state_dict(torch.load(self.checkpoint_path))
+        self._load_best_model()
         
         # 测试
         print("\n" + "=" * 50)
@@ -374,76 +445,10 @@ class iReflowExp(ProbForecastExp):
         return test_results
 
 
-def main():
-    """主函数"""
-    parser = argparse.ArgumentParser(description='iReflow Experiment')
-    
-    # 数据集参数
-    parser.add_argument('--dataset_type', type=str, default='ETTh1', help='数据集类型')
-    parser.add_argument('--data_path', type=str, default='./data/', help='数据路径')
-    parser.add_argument('--windows', type=int, default=168, help='历史窗口长度')
-    parser.add_argument('--pred_len', type=int, default=192, help='预测长度')
-    parser.add_argument('--horizon', type=int, default=1, help='预测步长')
-    
-    # 模型参数
-    parser.add_argument('--d_model', type=int, default=512, help='模型维度')
-    parser.add_argument('--n_heads', type=int, default=8, help='注意力头数')
-    parser.add_argument('--e_layers', type=int, default=2, help='编码器层数')
-    parser.add_argument('--flow_layers', type=int, default=3, help='Flow层数')
-    parser.add_argument('--d_ff', type=int, default=2048, help='FFN维度')
-    parser.add_argument('--dropout', type=float, default=0.1, help='Dropout率')
-    parser.add_argument('--use_norm', type=bool, default=True, help='使用归一化')
-    
-    # 训练参数
-    parser.add_argument('--batch_size', type=int, default=32, help='批大小')
-    parser.add_argument('--learning_rate', type=float, default=0.0001, help='学习率')
-    parser.add_argument('--epochs', type=int, default=100, help='训练轮数')
-    parser.add_argument('--patience', type=int, default=10, help='早停耐心值')
-    parser.add_argument('--device', type=str, default='cuda:0', help='设备')
-    
-    # Flow参数
-    parser.add_argument('--num_sampling_steps', type=int, default=1, help='ODE求解步数')
-    parser.add_argument('--temperature', type=float, default=1.0, help='采样温度')
-    parser.add_argument('--num_samples', type=int, default=100, help='测试样本数')
-    
-    # 其他参数
-    parser.add_argument('--seed', type=int, default=2021, help='随机种子')
-    
-    args = parser.parse_args()
-    
-    # 设置随机种子
-    reproducible(args.seed)
-    
-    # 创建实验
-    exp = iReflowExp(
-        dataset_type=args.dataset_type,
-        data_path=args.data_path,
-        windows=args.windows,
-        pred_len=args.pred_len,
-        horizon=args.horizon,
-        d_model=args.d_model,
-        n_heads=args.n_heads,
-        e_layers=args.e_layers,
-        flow_layers=args.flow_layers,
-        d_ff=args.d_ff,
-        dropout=args.dropout,
-        use_norm=args.use_norm,
-        batch_size=args.batch_size,
-        learning_rate=args.learning_rate,
-        epochs=args.epochs,
-        patience=args.patience,
-        num_sampling_steps=args.num_sampling_steps,
-        temperature=args.temperature,
-        num_samples=args.num_samples,
-        device=args.device
-    )
-    
-    # 训练和测试
-    results = exp.train()
-    
-    return results
-
-
 if __name__ == '__main__':
-    main()
+    setproctitle.setproctitle('iReflow_main')
+
+    import fire
+    # torch.multiprocessing.set_start_method('spawn')# good solution !!!!
+    fire.Fire(iReflowExp)
 

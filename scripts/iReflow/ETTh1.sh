@@ -19,7 +19,7 @@ D_FF=2048
 DROPOUT=0.1
 
 # 训练配置
-BATCH_SIZE=32
+BATCH_SIZE=64
 LEARNING_RATE=0.0001
 EPOCHS=100
 PATIENCE=10
@@ -37,8 +37,12 @@ HORIZON=1
 # 设备配置
 DEVICE="cuda:6"
 
+SEEDS='[22,33]'
+WANDB_PROJECT="iReflow"
+
 # 运行实验
 python3 ./src/experiments/iReflow.py \
+    config_wandb --project=${WANDB_PROJECT} \
     --dataset_type=${DATASET} \
     --data_path=${DATA_PATH} \
     --windows=${WINDOWS} \
@@ -57,7 +61,8 @@ python3 ./src/experiments/iReflow.py \
     --num_sampling_steps=${NUM_SAMPLING_STEPS} \
     --temperature=${TEMPERATURE} \
     --num_samples=${NUM_SAMPLES} \
-    --device=${DEVICE}
+    --device=${DEVICE} \
+    runs --seeds="${SEEDS}"
 
-echo "iReflow实验完成！"
+echo "iReflow-ETTh1 experiment completed!"
 

@@ -1,0 +1,109 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nsdiff"
+version = "0.1.0"
+description = "Non-stationary Diffusion For Probabilistic Time Series Forecasting"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "Weiwei Ye", email = "wwye155@gmail.com"},
+    {name = "Zhuopeng Xu", email = "xuzhuopeng@csu.edu.cn"},
+    {name = "Ning gui", email = "ninggui@gmail.com"},
+]
+keywords = ["time-series", "forecasting", "diffusion", "probabilistic", "deep-learning"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+]
+
+dependencies = [
+    "torch>=1.12.0",
+    "torch_timeseries==0.1.10",
+    "torchmetrics>=0.9.0",
+    "numpy>=1.21.0",
+    "pyyaml>=6.0",
+    "tqdm>=4.64.0",
+    "fire>=0.5.0",
+    "gluonts",
+    "pytorchts",
+    "CRPS",
+    "linear_attention_transformer",
+    "opt-einsum",
+    "pykeops",
+    "ema-pytorch",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=22.0.0",
+    "flake8>=5.0.0",
+    "mypy>=0.991",
+]
+wandb = [
+    "wandb>=0.13.0",
+]
+
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.black]
+line-length = 100
+target-version = ['py38', 'py39', 'py310', 'py311']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | build
+  | dist
+)/
+'''
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "--cov=src",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+]
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
+[[tool.mypy.overrides]]
+module = [
+    "torch_timeseries.*",
+    "gluonts.*",
+    "pytorchts.*",
+    "pykeops.*",
+    "linear_attention_transformer.*",
+]
+ignore_missing_imports = true
+

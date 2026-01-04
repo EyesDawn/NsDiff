@@ -9,6 +9,7 @@ import time
 import warnings
 import numpy as np
 from torch_timeseries.dataset import *
+import torch_timeseries.dataset as dataset_module
 from src.datasets import *
 from torch_timeseries.scaler import *
 from torch_timeseries.dataloader import SlidingWindowTS, ETTHLoader, ETTMLoader
@@ -91,12 +92,16 @@ class Exp_Long_Term_Forecast(Exp_Point_Basic):
         dataset_type = self.args.data
         root_path = self.args.root_path
         
-        self.dataset = parse_type(dataset_type, globals())(
+        # 创建一个包含所有必要模块的命名空间，确保能找到所有数据集类
+        namespace = globals().copy()
+        namespace.update(vars(dataset_module))
+        
+        self.dataset = parse_type(dataset_type, namespace)(
             root=root_path
         )
         
         scaler_type = getattr(self.args, 'scaler_type', 'StandardScaler')
-        self.scaler = parse_type(scaler_type, globals())()
+        self.scaler = parse_type(scaler_type, namespace)()
         
         window = self.args.seq_len
         steps = self.args.pred_len
@@ -370,7 +375,7 @@ class Exp_Long_Term_Forecast(Exp_Point_Basic):
 
         preds = []
         trues = []
-        folder_path = './test_results/' + setting + '/'
+        folder_path = './results/visual_results/' + setting + '/'
         if not os.path.exists(folder_path):
             os.makedirs(folder_path)
 
@@ -437,13 +442,13 @@ class Exp_Long_Term_Forecast(Exp_Point_Basic):
         print('test shape:', preds.shape, trues.shape)
 
         # result save
-        folder_path = './results/' + setting + '/'
+        folder_path = './results/runs/iTransformer/' + setting + '/'
         if not os.path.exists(folder_path):
             os.makedirs(folder_path)
 
         mae, mse, rmse, mape, mspe = metric(preds, trues)
         print('mse:{}, mae:{}'.format(mse, mae))
-        f = open("result_long_term_forecast.txt", 'a')
+        f = open("./results/runs/iTransformer/result_long_term_forecast.txt", 'a')
         f.write(setting + "  \n")
         f.write('mse:{}, mae:{}'.format(mse, mae))
         f.write('\n')

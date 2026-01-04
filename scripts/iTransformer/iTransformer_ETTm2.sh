@@ -29,7 +29,7 @@ WANDB_PROJECT="iTransformer"
 
 python -u ./src/experiments/iTransformer.py \
   --wandb_project ${WANDB_PROJECT} \
-  --is_training 1 \
+  --is_training 0 \
   --root_path ./data/ETTm2/ \
   --data_path ETTm2.csv \
   --model_id ETTm2_96_192 \
@@ -46,7 +46,8 @@ python -u ./src/experiments/iTransformer.py \
   --d_model 128 \
   --d_ff 128 \
   --itr 1 \
-  --batch_size 128
+  --batch_size 128 \
+  --checkpoints ./results/runs/iTransformer/
 
 # python -u ./src/experiments/iTransformer.py \
 #   --is_training 1 \

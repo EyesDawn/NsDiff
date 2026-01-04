@@ -10,7 +10,7 @@ build
 .vscode
 
 *.pth
-./results
+test_results
 args.json
 
 run

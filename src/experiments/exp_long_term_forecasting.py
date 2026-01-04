@@ -347,7 +347,9 @@ class Exp_Long_Term_Forecast(Exp_Point_Basic):
         test_data, test_loader = self._get_data(flag='test')
         if test:
             print('loading model')
-            self.model.load_state_dict(torch.load(os.path.join('./checkpoints/' + setting, 'checkpoint.pth')))
+            path = os.path.join(self.args.checkpoints, setting)
+            best_model_path = path + '/' + 'checkpoint.pth'
+            self.model.load_state_dict(torch.load(best_model_path))
         
         # 如果 wandb 还没有初始化（测试模式），则初始化它
         if self.wandb_project and wandb is not None and self.wandb_run is None:
@@ -408,9 +410,10 @@ class Exp_Long_Term_Forecast(Exp_Point_Basic):
                 outputs = outputs.detach().cpu().numpy()
                 batch_y = batch_y.detach().cpu().numpy()
                 if test_data.scale and self.args.inverse:
-                    shape = outputs.shape
-                    outputs = test_data.inverse_transform(outputs.squeeze(0)).reshape(shape)
-                    batch_y = test_data.inverse_transform(batch_y.squeeze(0)).reshape(shape)
+                    # 直接对整个批次进行 inverse_transform，不使用 squeeze(0)
+                    # 这样可以保持批次维度一致
+                    outputs = test_data.inverse_transform(outputs)
+                    batch_y = test_data.inverse_transform(batch_y)
 
                 pred = outputs
                 true = batch_y
@@ -420,14 +423,14 @@ class Exp_Long_Term_Forecast(Exp_Point_Basic):
                 if i % 20 == 0:
                     input = batch_x.detach().cpu().numpy()
                     if test_data.scale and self.args.inverse:
-                        shape = input.shape
-                        input = test_data.inverse_transform(input.squeeze(0)).reshape(shape)
+                        input = test_data.inverse_transform(input)
                     gt = np.concatenate((input[0, :, -1], true[0, :, -1]), axis=0)
                     pd = np.concatenate((input[0, :, -1], pred[0, :, -1]), axis=0)
                     visual(gt, pd, os.path.join(folder_path, str(i) + '.pdf'))
 
-        preds = np.array(preds)
-        trues = np.array(trues)
+        # 使用 concatenate 而不是 array，这样可以处理不同批次大小的情况
+        preds = np.concatenate(preds, axis=0)
+        trues = np.concatenate(trues, axis=0)
         print('test shape:', preds.shape, trues.shape)
         preds = preds.reshape(-1, preds.shape[-2], preds.shape[-1])
         trues = trues.reshape(-1, trues.shape[-2], trues.shape[-1])

@@ -33,7 +33,7 @@ python -u ./src/experiments/iTransformer.py \
   --wandb_project ${WANDB_PROJECT} \
   --is_training 1 \
   --root_path ./data/ \
-  --data_path solar_AL.txt \
+  --data_path solar_AL/solar_AL.txt \
   --model_id solar_96_192 \
   --model $model_name \
   --data SolarEnergy \
@@ -48,7 +48,7 @@ python -u ./src/experiments/iTransformer.py \
   --d_model 128 \
   --d_ff 128 \
   --itr 1 \
-  --batch_size 128 \
+  --batch_size 64 \
   --checkpoints ./results/runs/iTransformer/
 
 # python -u ./src/experiments/iTransformer.py \

@@ -33,7 +33,7 @@ python -u ./src/experiments/iTransformer.py \
   --wandb_project ${WANDB_PROJECT} \
   --is_training 1 \
   --root_path ./data/ \
-  --data_path traffic.csv \
+  --data_path traffic/traffic.txt \
   --model_id traffic_96_192 \
   --model $model_name \
   --data Traffic \

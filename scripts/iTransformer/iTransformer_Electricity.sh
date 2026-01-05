@@ -31,7 +31,7 @@ python -u ./src/experiments/iTransformer.py \
   --wandb_project ${WANDB_PROJECT} \
   --is_training 1 \
   --root_path ./data/ \
-  --data_path electricity.csv \
+  --data_path electricity/electricity.csv \
   --model_id electricity_96_192 \
   --model $model_name \
   --data Electricity \
@@ -46,7 +46,7 @@ python -u ./src/experiments/iTransformer.py \
   --d_model 128 \
   --d_ff 128 \
   --itr 1 \
-  --batch_size 128 \
+  --batch_size 64 \
   --checkpoints ./results/runs/iTransformer/
 
 

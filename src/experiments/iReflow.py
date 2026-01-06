@@ -56,12 +56,28 @@ class iReflowExp(ProbForecastExp):
     """
     iReflow实验类
     """
+    # 基本/兼容 iTransformer bash 的配置
+    wandb_project: str = None              # 对应 --wandb_project
+    model_id: str = "test"                 # 对应 --model_id
+    model: str = "iReflow"                 # 对应 --model（保持与 model_type 一致）
+    data: str = "custom"                   # 对应 --data，用于映射到 dataset_type
+    root_path: str = "./data/"             # 对应 --root_path
+    des: str = "Exp"                       # 对应 --des
+    itr: int = 1                           # 对应 --itr（目前主要用于兼容脚本参数）
+    checkpoints: str = "./results/runs/iTransformer/"  # 对应 --checkpoints
+    seq_len: int = 96                      # 对应 --seq_len，将与父类的 windows 对齐
+
     # 模型配置
     model_type: str = "iReflow"
     d_model: int = 512
     n_heads: int = 8
-    e_layers: int = 2  # iTransformer encoder层数
-    flow_layers: int = 3  # Velocity Network层数
+    e_layers: int = 2  # num of iTransformer encoder layers
+    flow_layers: int = 3  # num of Velocity Network layers
+    features: str = 'M'
+    enc_in: int = 7
+    dec_in: int = 7
+    c_out: int = 7
+    d_layers: int = 1
     d_ff: int = 2048
     dropout: float = 0.1
     embed: str = 'timeF'
@@ -73,6 +89,7 @@ class iReflowExp(ProbForecastExp):
     factor: int = 1
     
     # 训练配置
+    is_training: int = 1
     learning_rate: float = 0.0001
     epochs: int = 100
     batch_size: int = 32
@@ -87,6 +104,44 @@ class iReflowExp(ProbForecastExp):
     loss_func_type: str = 'mse'
     
     def __post_init__(self):
+        # ---------- 与父类配置的映射 ----------
+        # 1) model / model_type 对齐，便于 wandb 命名等
+        if self.model:
+            self.model_type = self.model
+        
+        # 2) data -> dataset_type（ProbForecastExp/FörercastExp 使用 dataset_type）
+        if getattr(self, "data", None):
+            self.dataset_type = self.data
+        
+        # 3) root_path + data_path -> data_path（ProbForecastExp._init_dataset 使用 data_path 作为 root）
+        #    兼容 iTransformer 脚本中 root_path + data_path 的写法
+        if getattr(self, "root_path", None) is not None and getattr(self, "data_path", None) is not None:
+            # 如果 data_path 已经是绝对路径，则不再拼接
+            if not os.path.isabs(self.data_path):
+                self.data_path = os.path.join(self.root_path, self.data_path)
+        
+        # 4) seq_len -> windows（ForecastSettings 中的窗口长度）
+        if getattr(self, "seq_len", None) is not None:
+            self.windows = self.seq_len
+        
+        # 5) checkpoints -> save_dir（ForecastExp 用 save_dir 作为根目录）
+        if getattr(self, "checkpoints", None):
+            norm_cp = os.path.normpath(self.checkpoints)
+            parts = norm_cp.split(os.sep)
+            if "runs" in parts:
+                # 例如 ./results/runs/iTransformer/ -> ./results
+                runs_idx = parts.index("runs")
+                base_parts = parts[:runs_idx] or [os.curdir]
+                self.save_dir = os.path.join(*base_parts)
+            else:
+                # 没有 runs 就取上一层目录
+                self.save_dir = os.path.dirname(norm_cp) or "."
+        
+        # 6) wandb_project -> project & wandb 开关
+        if getattr(self, "wandb_project", None):
+            # ForecastExp.config_wandb 会设置 self.project 与 self.wandb
+            self.config_wandb(self.wandb_project)
+
         # 创建模型配置
         self.model_configs = argparse.Namespace()
         self.model_configs.seq_len = self.windows

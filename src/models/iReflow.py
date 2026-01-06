@@ -1,7 +1,3 @@
-"""
-iReflow: Rectified Flow with Inverted Variate-Awareness for Probabilistic Time Series Forecasting
-整合iTransformer作为Conditioner和Velocity Network作为Generator
-"""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

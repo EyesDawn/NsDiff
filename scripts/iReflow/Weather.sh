@@ -1,26 +1,26 @@
 #!/bin/bash
 
-# iReflow运行脚本 - ETTm2数据集
+# iReflow运行脚本 - Weather数据集
 # 使用Rectified Flow进行概率时间序列预测
 
 export PYTHONPATH=./
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 
 # 数据集配置
-DATASET="ETTm2"
-DATA_PATH="./data/"
+DATASET="Weather"
+DATA_PATH="./data/weather/weather.csv"
 
-# 模型配置
+# 模型配置 - 与 iTransformer_Weather.sh 保持一致
 D_FEATURES="M"
-ENC_IN=7
-DEC_IN=7
-C_OUT=7
+ENC_IN=21
+DEC_IN=21
+C_OUT=21
 DES="Exp"
-D_MODEL=128
+D_MODEL=512
 N_HEADS=8
-E_LAYERS=2
+E_LAYERS=3
 FLOW_LAYERS=3
-D_FF=128
+D_FF=512
 DROPOUT=0.1
 
 # 训练配置
@@ -34,13 +34,13 @@ NUM_SAMPLING_STEPS=1
 TEMPERATURE=1.0
 NUM_SAMPLES=100
 
-# 预测配置
+# 预测配置 - 与 iTransformer_Weather.sh 保持一致
 WINDOWS=96
 PRED_LEN=192
 HORIZON=1
 
 # 设备配置
-DEVICE="cuda:2"
+DEVICE="cuda:1"
 
 SEEDS='[22,2023]'
 WANDB_PROJECT="iReflow"
@@ -74,5 +74,5 @@ python3 ./src/experiments/iReflow.py \
     --device=${DEVICE} \
     runs --seeds="${SEEDS}"
 
-echo "iReflow-ETTm2 experiment completed!"
+echo "iReflow-Weather experiment completed!"
 

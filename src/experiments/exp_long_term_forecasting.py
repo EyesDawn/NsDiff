@@ -375,9 +375,9 @@ class Exp_Long_Term_Forecast(Exp_Point_Basic):
 
         preds = []
         trues = []
-        folder_path = './results/visual_results/' + setting + '/'
-        if not os.path.exists(folder_path):
-            os.makedirs(folder_path)
+        # folder_path = './results/visual_results/' + setting + '/'
+        # if not os.path.exists(folder_path):
+        #     os.makedirs(folder_path)
 
         self.model.eval()
         with torch.no_grad():
@@ -425,13 +425,13 @@ class Exp_Long_Term_Forecast(Exp_Point_Basic):
 
                 preds.append(pred)
                 trues.append(true)
-                if i % 20 == 0:
-                    input = batch_x.detach().cpu().numpy()
-                    if test_data.scale and self.args.inverse:
-                        input = test_data.inverse_transform(input)
-                    gt = np.concatenate((input[0, :, -1], true[0, :, -1]), axis=0)
-                    pd = np.concatenate((input[0, :, -1], pred[0, :, -1]), axis=0)
-                    visual(gt, pd, os.path.join(folder_path, str(i) + '.pdf'))
+                # if i % 20 == 0:
+                #     input = batch_x.detach().cpu().numpy()
+                #     if test_data.scale and self.args.inverse:
+                #         input = test_data.inverse_transform(input)
+                #     gt = np.concatenate((input[0, :, -1], true[0, :, -1]), axis=0)
+                #     pd = np.concatenate((input[0, :, -1], pred[0, :, -1]), axis=0)
+                #     visual(gt, pd, os.path.join(folder_path, str(i) + '.pdf'))
 
         # 使用 concatenate 而不是 array，这样可以处理不同批次大小的情况
         preds = np.concatenate(preds, axis=0)

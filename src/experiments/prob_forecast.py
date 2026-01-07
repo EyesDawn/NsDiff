@@ -61,8 +61,10 @@ class ProbForecastExp(ForecastExp):
             }
         )
         self.metrics.to("cpu")
-        ctx = mp.get_context("spawn")  # Options: 'fork', 'spawn', 'forkserver'
-        self.task_pool = ctx.Pool(processes=32)
+        # 之前尝试使用多进程池异步更新 metrics，但由于 torchmetrics 的度量对象
+        # 在子进程中的状态不会回传到主进程，导致主进程中的 metrics 没有被真正 update，
+        # 从而在 compute() 时出现 "compute called before update" 的警告。
+        # 为保证正确性，这里改为在主进程中同步更新 metrics，不再使用多进程池。
 
     def _init_dataset(self):
         self.dataset: TimeSeriesDataset = parse_type(self.dataset_type, globals())(
@@ -160,7 +162,6 @@ class ProbForecastExp(ForecastExp):
     def _evaluate(self, dataloader):
         self.model.eval()
         self.metrics.reset()
-        results = []
         with tqdm(total=len(dataloader.dataset)) as progress_bar:
             for batch_x, batch_y, origin_x, origin_y, batch_x_date_enc, batch_y_date_enc in dataloader:
                 batch_size = batch_x.size(0)
@@ -177,17 +178,14 @@ class ProbForecastExp(ForecastExp):
                 if self.invtrans_loss:
                     preds = self.scaler.inverse_transform(preds)
                     truths = origin_y
-                    
-                # update_metrics(preds.contiguous().cpu().detach(), truths.contiguous().cpu().detach(), self.metrics)
-                # if isinstance(preds, np.ndarray):
-                #     results.append(self.task_pool.apply_async(update_metrics, (preds, truths, self.metrics)))
-                # else:
-                results.append(self.task_pool.apply_async(update_metrics, (preds.contiguous().cpu().detach(), truths.contiguous().cpu().detach(), self.metrics)))
-                
-                progress_bar.update(batch_x.shape[0])
 
-        for result in results:
-            result.get()  # Ensure the metric update is finished
+                # 在主进程中同步更新 metrics，避免多进程导致的状态不同步问题
+                self.metrics.update(
+                    preds.contiguous().cpu().detach(),
+                    truths.contiguous().cpu().detach(),
+                )
+
+                progress_bar.update(batch_x.shape[0])
 
         result = {name: float(metric.compute()) for name, metric in self.metrics.items()}
         return result
@@ -364,6 +362,9 @@ class ProbForecastExp(ForecastExp):
             + "] -"
         )
         print(*args, **kwargs)
+        # 确保日志目录存在
+        if not os.path.exists(self.run_save_dir):
+            os.makedirs(self.run_save_dir, exist_ok=True)
         with open(os.path.join(self.run_save_dir, "output.log"), "a+") as f:
             print(time, *args, flush=True, file=f)
 

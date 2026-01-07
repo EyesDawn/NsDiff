@@ -113,12 +113,13 @@ class iReflowExp(ProbForecastExp):
         if getattr(self, "data", None):
             self.dataset_type = self.data
         
-        # 3) root_path + data_path -> data_path（ProbForecastExp._init_dataset 使用 data_path 作为 root）
-        #    兼容 iTransformer 脚本中 root_path + data_path 的写法
-        if getattr(self, "root_path", None) is not None and getattr(self, "data_path", None) is not None:
-            # 如果 data_path 已经是绝对路径，则不再拼接
-            if not os.path.isabs(self.data_path):
-                self.data_path = os.path.join(self.root_path, self.data_path)
+        # 3) root_path -> data_path（ProbForecastExp._init_dataset 使用 data_path 作为 root）
+        #    兼容 iTransformer 脚本：iTransformer 直接使用 root_path 作为数据集类的 root
+        #    数据集类会在 root_path 下创建数据集子目录（如 ETTm2/ETTm2.csv）
+        if getattr(self, "root_path", None) is not None:
+            # 直接使用 root_path 作为 data_path（数据集类的 root 参数）
+            # 这样数据集类会在 root_path 下自动创建对应的数据集目录
+            self.data_path = self.root_path
         
         # 4) seq_len -> windows（ForecastSettings 中的窗口长度）
         if getattr(self, "seq_len", None) is not None:
@@ -174,8 +175,8 @@ class iReflowExp(ProbForecastExp):
         )
         
         # 打印模型参数
-        num_params = count_parameters(self.model)
-        print(f"Model initialized with {num_params} parameters")
+        # num_params = count_parameters(self.model)
+        # print(f"Model initialized with {num_params} parameters")
     
     def _setup_early_stopper(self):
         """设置早停和检查点路径"""
@@ -337,8 +338,129 @@ class iReflowExp(ProbForecastExp):
         delattr(self, '_num_samples_for_eval')
         return result
     
+    @property
+    def result_related_configs(self):
+        """
+        重写 result_related_configs 属性，确保所有值都可以被 JSON 序列化
+        排除不可序列化的对象（如 argparse.Namespace, 模型对象等）
+        """
+        from torch_timeseries.utils import asdict_exc
+        from torch_timeseries.core.experiments.settings import BaseIrrelevant
+        import json
+        
+        ident = asdict_exc(self, BaseIrrelevant)
+        
+        # 过滤掉不可序列化的对象
+        serializable_ident = {}
+        for k, v in ident.items():
+            try:
+                # 尝试序列化以检查是否可序列化
+                json.dumps(v)
+                serializable_ident[k] = v
+            except (TypeError, ValueError):
+                # 如果不可序列化，转换为字符串表示
+                # 对于 argparse.Namespace 等对象，转换为字符串
+                if isinstance(v, (argparse.Namespace,)):
+                    # 对于 Namespace 对象，转换为字典
+                    serializable_ident[k] = vars(v) if hasattr(v, '__dict__') else str(v)
+                elif hasattr(v, '__class__'):
+                    # 对于其他对象，使用类型名称
+                    serializable_ident[k] = type(v).__name__
+                else:
+                    serializable_ident[k] = str(v)
+        
+        return serializable_ident
+    
+    def _get_setting(self, seed=0):
+        """
+        生成实验设置字符串，用于 checkpoints 路径命名
+        格式参考 iTransformer 的 setting 格式
+        """
+        # 使用 seq_len 或 windows（已对齐）
+        seq_len = getattr(self, 'seq_len', self.windows)
+        label_len = 48  # iReflow 不使用 label_len，设为 0 以保持格式一致
+        
+        setting = '{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_fc{}_eb{}_dt{}_{}_{}'.format(
+            self.model_id,
+            self.dataset_type,
+            self.features,
+            seq_len,
+            label_len,
+            self.pred_len,
+            self.d_model,
+            self.n_heads,
+            self.e_layers,
+            self.d_layers,
+            self.d_ff,
+            self.factor,
+            self.embed,
+            True,  # distil (iReflow 不使用，设为 True)
+            self.des,
+            self.class_strategy,
+            0
+        )
+        return setting
+    
+    def _load_checkpoint_model(self, setting):
+        """
+        从 checkpoints 加载模型
+        路径规则：os.path.join(self.checkpoints, setting) + '/checkpoint.pth'
+        
+        支持两种 checkpoint 格式：
+        1. iReflow checkpoint: 直接加载整个模型
+        2. iTransformer checkpoint: 只加载 itransformer 部分的权重
+        """
+        path = os.path.join(self.checkpoints, setting)
+        best_model_path = os.path.join(path, 'checkpoint.pth')
+        
+        if not os.path.exists(best_model_path):
+            raise FileNotFoundError(
+                f"Checkpoint not found at {best_model_path}. "
+                f"Please ensure the model has been trained and saved."
+            )
+        
+        print(f'Loading model from {best_model_path}')
+        checkpoint = torch.load(best_model_path, map_location=self.device, weights_only=False)
+        
+        # 检查是否是 iTransformer checkpoint（包含 enc_embedding, encoder, projector）
+        # 还是 iReflow checkpoint（包含 itransformer, velocity_net 等）
+        if 'enc_embedding' in checkpoint or 'encoder' in checkpoint or 'projector' in checkpoint:
+            # 这是 iTransformer checkpoint，需要提取 itransformer 部分的权重
+            print('Detected iTransformer checkpoint, loading itransformer weights...')
+            
+            # 构建 itransformer 的 state_dict（添加 'itransformer.' 前缀）
+            itransformer_state_dict = {}
+            for key, value in checkpoint.items():
+                # 跳过 projector（iReflow 不使用）
+                if key.startswith('projector'):
+                    continue
+                # 添加 'itransformer.' 前缀
+                itransformer_state_dict[f'itransformer.{key}'] = value
+            
+            # 只加载 itransformer 部分的权重
+            missing_keys, unexpected_keys = self.model.itransformer.load_state_dict(
+                itransformer_state_dict, strict=False
+            )
+            
+            if missing_keys:
+                print(f'Warning: Missing keys in itransformer: {missing_keys[:5]}...' if len(missing_keys) > 5 else f'Warning: Missing keys: {missing_keys}')
+            if unexpected_keys:
+                print(f'Warning: Unexpected keys: {unexpected_keys[:5]}...' if len(unexpected_keys) > 5 else f'Warning: Unexpected keys: {unexpected_keys}')
+            
+            print('iTransformer weights loaded successfully. Velocity network and uncertainty estimator remain untrained.')
+        else:
+            # 这是 iReflow checkpoint，直接加载整个模型
+            missing_keys, unexpected_keys = self.model.load_state_dict(checkpoint, strict=False)
+            
+            if missing_keys:
+                print(f'Warning: Missing keys: {missing_keys[:5]}...' if len(missing_keys) > 5 else f'Warning: Missing keys: {missing_keys}')
+            if unexpected_keys:
+                print(f'Warning: Unexpected keys: {unexpected_keys[:5]}...' if len(unexpected_keys) > 5 else f'Warning: Unexpected keys: {unexpected_keys}')
+            
+            print('iReflow model loaded successfully')
+    
     def _load_best_model(self):
-        """加载最佳模型"""
+        """加载最佳模型（从 run_save_dir）"""
         self.model.load_state_dict(
             torch.load(self.best_checkpoint_filepath, map_location=self.device)
         )
@@ -362,6 +484,41 @@ class iReflowExp(ProbForecastExp):
     
     def run(self, seed=42) -> Dict[str, float]:
         """运行实验，支持wandb追踪和检查点恢复"""
+        # 生成 setting 字符串（用于 checkpoints 路径）
+        setting = self._get_setting(seed)
+        
+        # 如果 is_training=0，则直接加载模型并测试
+        if self.is_training == 0:
+            print('>>>>>>>testing (no training) : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
+            
+            # 需要先 setup_run 以初始化必要的路径和配置
+            self._setup_run(seed)
+            
+            # 初始化数据加载器
+            self._init_data_loader()
+            
+            # 初始化模型
+            self._init_model()
+            
+            # 初始化指标
+            self._init_metrics()
+            
+            # 从 checkpoints 加载模型
+            self._load_checkpoint_model(setting)
+            
+            # 直接测试
+            test_result = self._test()
+            
+            if self._use_wandb():
+                if not self._init_wandb(self.project, seed):
+                    return test_result
+                for k, v in test_result.items():
+                    wandb.run.summary[f"test_{k}"] = v
+                wandb.finish()
+            
+            return test_result
+        
+        # 训练模式 (is_training=1)
         if self._use_wandb() and not self._init_wandb(self.project, seed): 
             return {}
         

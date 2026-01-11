@@ -13,7 +13,7 @@ ROOT_PATH="./data/"
 
 # 模型配置
 MODEL_ID="ETTm2_96_192"
-MODEL_NAME="iReflow"
+MODEL_NAME="iReflow-v1"
 D_FEATURES="M"
 ENC_IN=7
 DEC_IN=7
@@ -27,7 +27,7 @@ D_FF=128
 DROPOUT=0.1
 
 # 训练配置
-IS_TRAINING=0
+IS_TRAINING=1
 BATCH_SIZE=32
 LEARNING_RATE=0.0001
 EPOCHS=10
@@ -53,7 +53,7 @@ CHECKPOINTS="./results/runs/iTransformer/"
 ITR=1
 
 # 运行实验
-python3 ./src/experiments/iReflow.py \
+python -u ./src/experiments/iReflow.py \
     --wandb_project ${WANDB_PROJECT} \
     --is_training ${IS_TRAINING} \
     --root_path ${ROOT_PATH} \

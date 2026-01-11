@@ -165,9 +165,28 @@ class iReflowExp(ProbForecastExp):
     def _init_model(self):
         """初始化模型"""
         self.model = iReflow(self.model_configs).to(self.device)
-        self.model_optim = torch.optim.Adam(
-            self.model.parameters(), lr=self.learning_rate
-        )
+        
+        # 根据 is_training 参数决定训练哪些部分
+        if self.is_training == 1:
+            # 只训练 Velocity Network 和 Uncertainty Estimator
+            # 冻结 iTransformer 参数
+            for param in self.model.itransformer.parameters():
+                param.requires_grad = False
+            
+            # 只优化 velocity_net 和 uncertainty_estimator 的参数
+            trainable_params = list(self.model.velocity_net.parameters()) + \
+                             list(self.model.uncertainty_estimator.parameters())
+            self.model_optim = torch.optim.Adam(
+                trainable_params, lr=self.learning_rate
+            )
+            print("Initialized model: iTransformer frozen, only training Velocity Network and Uncertainty Estimator")
+        else:
+            # 训练整个模型（is_training=2 或默认情况）
+            self.model_optim = torch.optim.Adam(
+                self.model.parameters(), lr=self.learning_rate
+            )
+            if self.is_training == 2:
+                print("Initialized model: training entire model (iTransformer + Velocity Network)")
         
         # 学习率调度器
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -371,6 +390,26 @@ class iReflowExp(ProbForecastExp):
         
         return serializable_ident
     
+    def _check_run_exist(self, seed: str):
+        """
+        重写 _check_run_exist 方法，使用 result_related_configs 而不是 asdict(self)
+        以避免序列化模型对象等不可序列化的对象
+        """
+        if not os.path.exists(self.run_save_dir):
+            os.makedirs(self.run_save_dir)
+            print(f"Creating running results saving dir: '{self.run_save_dir}'.")
+        else:
+            print(f"result directory exists: {self.run_save_dir}")
+        import json
+        with open(
+            os.path.join(self.run_save_dir, "args.json"), "w", encoding="utf-8"
+        ) as f:
+            # 使用 result_related_configs 而不是 asdict(self)，避免序列化模型对象
+            json.dump(self.result_related_configs, f, ensure_ascii=False, indent=4)
+
+        exists = os.path.exists(self.run_checkpoint_filepath)
+        return exists
+    
     def _get_setting(self, seed=0):
         """
         生成实验设置字符串，用于 checkpoints 路径命名
@@ -378,7 +417,7 @@ class iReflowExp(ProbForecastExp):
         """
         # 使用 seq_len 或 windows（已对齐）
         seq_len = getattr(self, 'seq_len', self.windows)
-        label_len = 48  # iReflow 不使用 label_len，设为 0 以保持格式一致
+        label_len = 48  # iReflow 不使用 label_len，设为 48 以保持格式一致
         
         setting = '{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_fc{}_eb{}_dt{}_{}_{}'.format(
             self.model_id,
@@ -401,6 +440,116 @@ class iReflowExp(ProbForecastExp):
         )
         return setting
     
+    def _load_itransformer_only(self, setting):
+        """
+        只加载 iTransformer 的权重（用于 is_training=1 模式）
+        路径规则：os.path.join(self.checkpoints, setting) + '/checkpoint.pth'
+        """
+        path = os.path.join(self.checkpoints, setting)
+        best_model_path = os.path.join(path, 'checkpoint.pth')
+        
+        if not os.path.exists(best_model_path):
+            raise FileNotFoundError(
+                f"Checkpoint not found at {best_model_path}. "
+                f"Please ensure the iTransformer model has been trained and saved."
+            )
+        
+        print(f'Loading iTransformer weights from {best_model_path}')
+        checkpoint = torch.load(best_model_path, map_location=self.device, weights_only=False)
+        
+        # 处理嵌套字典的情况（checkpoint 可能包含 'model' 键）
+        if isinstance(checkpoint, dict) and 'model' in checkpoint:
+            print('Found nested checkpoint structure, extracting model state_dict...')
+            checkpoint = checkpoint['model']
+        
+        # 打印 checkpoint 的键名以便调试
+        checkpoint_keys = list(checkpoint.keys())
+        print(f'Checkpoint keys (all {len(checkpoint_keys)} keys): {checkpoint_keys}')
+        
+        # 检查是否是 iTransformer checkpoint（键名包含 enc_embedding, encoder, projector）
+        # 还是 iReflow checkpoint（包含 itransformer, velocity_net 等）
+        checkpoint_keys_str = ' '.join(str(k) for k in checkpoint.keys())
+        is_itransformer_checkpoint = any(
+            key.startswith('enc_embedding') or 
+            key.startswith('encoder') or 
+            key.startswith('projector')
+            for key in checkpoint.keys()
+        )
+        
+        if is_itransformer_checkpoint:
+            # 这是 iTransformer checkpoint，需要提取 itransformer 部分的权重
+            print('Detected iTransformer checkpoint, loading itransformer weights...')
+            
+            # 构建 itransformer 的 state_dict（直接使用原始键名，因为 load_state_dict 是直接加载到子模块）
+            itransformer_state_dict = {}
+            for key, value in checkpoint.items():
+                # 跳过 projector（iReflow 不使用）
+                if key.startswith('projector'):
+                    continue
+                # 跳过非模型参数（如 optimizer, epoch 等）
+                if key in ['optimizer', 'scheduler', 'epoch', 'current_epoch', 'rng_state', 'early_stopping']:
+                    continue
+                # 直接使用原始键名（不需要添加 'itransformer.' 前缀，因为是直接加载到子模块）
+                itransformer_state_dict[key] = value
+            
+            if not itransformer_state_dict:
+                raise ValueError("Could not extract itransformer weights from iTransformer checkpoint. Checkpoint may be empty or in unexpected format.")
+            
+            # 只加载 itransformer 部分的权重
+            missing_keys, unexpected_keys = self.model.itransformer.load_state_dict(
+                itransformer_state_dict, strict=False
+            )
+            
+            if missing_keys:
+                print(f'Warning: Missing keys in itransformer: {missing_keys[:5]}...' if len(missing_keys) > 5 else f'Warning: Missing keys: {missing_keys}')
+            if unexpected_keys:
+                print(f'Warning: Unexpected keys: {unexpected_keys[:5]}...' if len(unexpected_keys) > 5 else f'Warning: Unexpected keys: {unexpected_keys}')
+            
+            print('iTransformer weights loaded successfully. Velocity network and uncertainty estimator will be trained.')
+        else:
+            # 这是 iReflow checkpoint，尝试提取 itransformer 部分
+            print('Detected iReflow checkpoint, extracting itransformer weights...')
+            itransformer_state_dict = {}
+            for key, value in checkpoint.items():
+                # 跳过非模型参数
+                if key in ['optimizer', 'scheduler', 'epoch', 'current_epoch', 'rng_state', 'early_stopping']:
+                    continue
+                if key.startswith('itransformer.'):
+                    # 移除 'itransformer.' 前缀
+                    new_key = key[len('itransformer.'):]
+                    itransformer_state_dict[new_key] = value
+            
+            if not itransformer_state_dict:
+                # 尝试其他可能的键名格式
+                print('Trying alternative key formats...')
+                for key, value in checkpoint.items():
+                    if key in ['optimizer', 'scheduler', 'epoch', 'current_epoch', 'rng_state', 'early_stopping']:
+                        continue
+                    # 检查是否是 iTransformer 的直接键（没有前缀）
+                    if any(k in key for k in ['enc_embedding', 'encoder']):
+                        itransformer_state_dict[key] = value
+                
+                if not itransformer_state_dict:
+                    all_keys = list(checkpoint.keys())
+                    raise ValueError(
+                        f"Could not find itransformer weights in the checkpoint. "
+                        f"Available keys ({len(all_keys)} total): {all_keys}. "
+                        f"Please ensure the checkpoint contains iTransformer weights. "
+                        f"Expected keys: 'enc_embedding', 'encoder', 'projector' for iTransformer checkpoint, "
+                        f"or 'itransformer.*' for iReflow checkpoint."
+                    )
+            
+            missing_keys, unexpected_keys = self.model.itransformer.load_state_dict(
+                itransformer_state_dict, strict=False
+            )
+            
+            if missing_keys:
+                print(f'Warning: Missing keys in itransformer: {missing_keys[:5]}...' if len(missing_keys) > 5 else f'Warning: Missing keys: {missing_keys}')
+            if unexpected_keys:
+                print(f'Warning: Unexpected keys: {unexpected_keys[:5]}...' if len(unexpected_keys) > 5 else f'Warning: Unexpected keys: {unexpected_keys}')
+            
+            print('iTransformer weights extracted successfully.')
+    
     def _load_checkpoint_model(self, setting):
         """
         从 checkpoints 加载模型
@@ -422,20 +571,38 @@ class iReflowExp(ProbForecastExp):
         print(f'Loading model from {best_model_path}')
         checkpoint = torch.load(best_model_path, map_location=self.device, weights_only=False)
         
-        # 检查是否是 iTransformer checkpoint（包含 enc_embedding, encoder, projector）
+        # 处理嵌套字典的情况（checkpoint 可能包含 'model' 键）
+        if isinstance(checkpoint, dict) and 'model' in checkpoint:
+            print('Found nested checkpoint structure, extracting model state_dict...')
+            checkpoint = checkpoint['model']
+        
+        # 检查是否是 iTransformer checkpoint（键名包含 enc_embedding, encoder, projector）
         # 还是 iReflow checkpoint（包含 itransformer, velocity_net 等）
-        if 'enc_embedding' in checkpoint or 'encoder' in checkpoint or 'projector' in checkpoint:
+        is_itransformer_checkpoint = any(
+            key.startswith('enc_embedding') or 
+            key.startswith('encoder') or 
+            key.startswith('projector')
+            for key in checkpoint.keys()
+        )
+        
+        if is_itransformer_checkpoint:
             # 这是 iTransformer checkpoint，需要提取 itransformer 部分的权重
             print('Detected iTransformer checkpoint, loading itransformer weights...')
             
-            # 构建 itransformer 的 state_dict（添加 'itransformer.' 前缀）
+            # 构建 itransformer 的 state_dict（直接使用原始键名，因为 load_state_dict 是直接加载到子模块）
             itransformer_state_dict = {}
             for key, value in checkpoint.items():
                 # 跳过 projector（iReflow 不使用）
                 if key.startswith('projector'):
                     continue
-                # 添加 'itransformer.' 前缀
-                itransformer_state_dict[f'itransformer.{key}'] = value
+                # 跳过非模型参数
+                if key in ['optimizer', 'scheduler', 'epoch', 'current_epoch', 'rng_state', 'early_stopping']:
+                    continue
+                # 直接使用原始键名（不需要添加 'itransformer.' 前缀，因为是直接加载到子模块）
+                itransformer_state_dict[key] = value
+            
+            if not itransformer_state_dict:
+                raise ValueError("Could not extract itransformer weights from iTransformer checkpoint. Checkpoint may be empty or in unexpected format.")
             
             # 只加载 itransformer 部分的权重
             missing_keys, unexpected_keys = self.model.itransformer.load_state_dict(
@@ -483,11 +650,18 @@ class iReflowExp(ProbForecastExp):
         print("Run state saved ... ")
     
     def run(self, seed=42) -> Dict[str, float]:
-        """运行实验，支持wandb追踪和检查点恢复"""
+        """
+        运行实验，支持wandb追踪和检查点恢复
+        
+        训练模式说明：
+        - is_training=0: 不训练任何模型，只加载已保存的权重并进行测试评估
+        - is_training=1: 只训练Velocity Network，加载iTransformer模型的权重，最后进行测试评估
+        - is_training=2: 训练整个模型(iTransformer+VelocityNetwork)
+        """
         # 生成 setting 字符串（用于 checkpoints 路径）
         setting = self._get_setting(seed)
         
-        # 如果 is_training=0，则直接加载模型并测试
+        # 模式 0: 只测试，不训练
         if self.is_training == 0:
             print('>>>>>>>testing (no training) : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
             
@@ -518,7 +692,98 @@ class iReflowExp(ProbForecastExp):
             
             return test_result
         
-        # 训练模式 (is_training=1)
+        # 模式 1: 只训练 Velocity Network（加载 iTransformer 权重）
+        if self.is_training == 1:
+            print('>>>>>>>training Velocity Network only (iTransformer frozen) : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
+            
+            if self._use_wandb() and not self._init_wandb(self.project, seed): 
+                return {}
+            
+            self._setup_run(seed)
+            
+            # 初始化数据加载器
+            self._init_data_loader()
+            
+            # 初始化模型（会自动冻结 iTransformer）
+            self._init_model()
+            
+            # 加载 iTransformer 权重
+            self._load_itransformer_only(setting)
+            
+            # 初始化指标
+            self._init_metrics()
+            
+            # 设置早停和检查点路径
+            self._setup_early_stopper()
+            
+            # 检查并恢复运行检查点（需要在模型初始化之后）
+            if self._check_run_exist(seed):
+                self._resume_run(seed)
+
+            self._run_print(f"run : {self.current_run} in seed: {seed}")
+
+            parameter_tables, model_parameters_num = count_parameters(self.model)
+            self._run_print(f"parameter_tables: {parameter_tables}")
+            self._run_print(f"model parameters: {model_parameters_num}")
+
+            if self._use_wandb():
+                wandb.run.summary["parameters"] = model_parameters_num
+
+            # 训练循环
+            while self.current_epoch < self.epochs:
+                epoch_start_time = time.time()
+                if self.early_stopping.early_stop is True:
+                    self._run_print(
+                        f"val loss no decreased for patience={self.patience} epochs,  early stopping ...."
+                    )
+                    break
+
+                # 可恢复的随机性
+                reproducible(seed + self.current_epoch)
+                train_losses = self._train()
+                self._run_print(
+                    "Epoch: {} cost time: {}s".format(
+                        self.current_epoch + 1, time.time() - epoch_start_time
+                    )
+                )
+                self._run_print(f"Training loss : {np.mean(train_losses)}")
+
+                val_result = self._val()
+                test_result = self._test()
+
+                self.current_epoch = self.current_epoch + 1
+                
+                # 使用CRPS作为早停指标
+                self.early_stopping(val_result['crps'], self.model)
+                
+                # 学习率调度
+                self.scheduler.step(val_result['loss'])
+
+                self._save_run_check_point(seed)
+
+                if self._use_wandb():
+                    wandb.log({'training_loss': np.mean(train_losses)}, step=self.current_epoch)
+                    wandb.log({f"val_{k}": v for k, v in val_result.items()}, step=self.current_epoch)
+                    wandb.log({f"test_{k}": v for k, v in test_result.items()}, step=self.current_epoch)
+
+            self._load_best_model()
+            best_test_result = self._test()
+            if self._use_wandb():
+                for k, v in best_test_result.items(): 
+                    wandb.run.summary[f"best_test_{k}"] = v 
+            
+            if self._use_wandb():  
+                wandb.finish()
+            return best_test_result
+        
+        # 模式 2: 训练整个模型 (is_training=2 或默认)
+        if self.is_training == 2:
+            print('>>>>>>>training entire model (iTransformer + Velocity Network) : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
+        else:
+            # 兼容旧代码：如果 is_training 不是 0, 1, 2，默认当作 2 处理
+            print('>>>>>>>training entire model (default mode) : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
+            self.is_training = 2
+        
         if self._use_wandb() and not self._init_wandb(self.project, seed): 
             return {}
         
@@ -527,7 +792,7 @@ class iReflowExp(ProbForecastExp):
         # 初始化数据加载器
         self._init_data_loader()
         
-        # 初始化模型
+        # 初始化模型（训练整个模型）
         self._init_model()
         
         # 初始化指标

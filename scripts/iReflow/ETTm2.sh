@@ -13,7 +13,7 @@ ROOT_PATH="./data/"
 
 # 模型配置
 MODEL_ID="ETTm2_96_192"
-MODEL_NAME="iReflow-v1"
+MODEL_NAME="iReflow"
 D_FEATURES="M"
 ENC_IN=7
 DEC_IN=7
@@ -47,13 +47,13 @@ HORIZON=1
 DEVICE="cuda:2"
 
 # 实验配置
-SEEDS='[22,2023]'
+SEEDS='[2222,2023]'
 WANDB_PROJECT="iReflow-v1"
 CHECKPOINTS="./results/runs/iTransformer/"
 ITR=1
 
 # 运行实验
-python -u ./src/experiments/iReflow.py \
+python3 -u ./src/experiments/iReflow.py \
     --wandb_project ${WANDB_PROJECT} \
     --is_training ${IS_TRAINING} \
     --root_path ${ROOT_PATH} \

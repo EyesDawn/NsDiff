@@ -8,9 +8,12 @@ export CUDA_DEVICE_ORDER=PCI_BUS_ID
 
 # 数据集配置
 DATASET="Electricity"
-DATA_PATH="./data/electricity/electricity.csv"
+DATA_PATH="electricity/electricity.csv"
+ROOT_PATH="./data/"
 
-# 模型配置 - 与 iTransformer_Electricity.sh 保持一致
+# 模型配置
+MODEL_ID="electricity_96_192"
+MODEL_NAME="iReflow"
 D_FEATURES="M"
 ENC_IN=321
 DEC_IN=321
@@ -24,6 +27,7 @@ D_FF=512
 DROPOUT=0.1
 
 # 训练配置
+IS_TRAINING=1
 BATCH_SIZE=16
 LEARNING_RATE=0.0005
 EPOCHS=10
@@ -34,44 +38,51 @@ NUM_SAMPLING_STEPS=1
 TEMPERATURE=1.0
 NUM_SAMPLES=100
 
-# 预测配置 - 与 iTransformer_Electricity.sh 保持一致
-WINDOWS=96
+# 预测配置
+SEQ_LEN=96
 PRED_LEN=192
 HORIZON=1
 
 # 设备配置
-DEVICE="cuda:0"
+DEVICE="cuda:1"
 
-SEEDS='[22,2023]'
-WANDB_PROJECT="iReflow"
+SEEDS='[2222,2023]'
+WANDB_PROJECT="iReflow-v1"
+CHECKPOINTS="./results/runs/iTransformer/"
+ITR=1
 
 # 运行实验
-python3 ./src/experiments/iReflow.py \
-    config_wandb --project=${WANDB_PROJECT} \
-    --dataset_type=${DATASET} \
-    --data_path=${DATA_PATH} \
-    --windows=${WINDOWS} \
-    --features=${D_FEATURES} \
-    --enc_in=${ENC_IN} \
-    --dec_in=${DEC_IN} \
-    --c_out=${C_OUT} \
-    --pred_len=${PRED_LEN} \
-    --horizon=${HORIZON} \
-    --d_model=${D_MODEL} \
-    --n_heads=${N_HEADS} \
-    --e_layers=${E_LAYERS} \
-    --flow_layers=${FLOW_LAYERS} \
-    --d_ff=${D_FF} \
-    --des=${DES} \
-    --dropout=${DROPOUT} \
-    --batch_size=${BATCH_SIZE} \
-    --learning_rate=${LEARNING_RATE} \
-    --epochs=${EPOCHS} \
-    --patience=${PATIENCE} \
-    --num_sampling_steps=${NUM_SAMPLING_STEPS} \
-    --temperature=${TEMPERATURE} \
-    --num_samples=${NUM_SAMPLES} \
-    --device=${DEVICE} \
+python3 -u ./src/experiments/iReflow.py \
+    --wandb_project ${WANDB_PROJECT} \
+    --is_training ${IS_TRAINING} \
+    --root_path ${ROOT_PATH} \
+    --data_path ${DATA_PATH} \
+    --model_id ${MODEL_ID} \
+    --model ${MODEL_NAME} \
+    --data ${DATASET} \
+    --features ${D_FEATURES} \
+    --seq_len ${SEQ_LEN} \
+    --pred_len ${PRED_LEN} \
+    --e_layers ${E_LAYERS} \
+    --enc_in ${ENC_IN} \
+    --dec_in ${DEC_IN} \
+    --c_out ${C_OUT} \
+    --des ${DES} \
+    --d_model ${D_MODEL} \
+    --d_ff ${D_FF} \
+    --batch_size ${BATCH_SIZE} \
+    --learning_rate ${LEARNING_RATE} \
+    --itr ${ITR} \
+    --checkpoints ${CHECKPOINTS} \
+    --flow_layers ${FLOW_LAYERS} \
+    --n_heads ${N_HEADS} \
+    --dropout ${DROPOUT} \
+    --epochs ${EPOCHS} \
+    --patience ${PATIENCE} \
+    --num_sampling_steps ${NUM_SAMPLING_STEPS} \
+    --temperature ${TEMPERATURE} \
+    --num_samples ${NUM_SAMPLES} \
+    --device ${DEVICE} \
     runs --seeds="${SEEDS}"
 
 echo "iReflow-Electricity experiment completed!"

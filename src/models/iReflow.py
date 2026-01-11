@@ -25,13 +25,24 @@ class iReflow(nn.Module):
         self.itransformer = iTransformer(configs)
         
         # 不确定性估计器（Aleatoric Uncertainty）
-        # 从iTransformer的encoder输出估计sigma
+        # 改进：使用encoder特征和预测残差来估计sigma
+        # 输入：encoder特征 [B, D, d_model]
+        # 输出：sigma [B, D, P] -> [B, P, D]
         self.uncertainty_estimator = nn.Sequential(
             nn.Linear(configs.d_model, configs.d_model // 2),
             nn.ReLU(),
+            nn.Dropout(configs.dropout if hasattr(configs, 'dropout') else 0.1),
             nn.Linear(configs.d_model // 2, configs.pred_len),
             nn.Softplus()  # 确保sigma > 0
         )
+        
+        # 初始化：让sigma的初始值更合理（基于预测长度的经验值）
+        # 使用较小的初始值，避免sigma过大导致训练不稳定
+        for m in self.uncertainty_estimator.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight, gain=0.1)  # 较小的gain，让sigma初始值较小
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0.0)
         
         # Stage 2: Velocity Network as Generator
         self.velocity_net = VelocityNetwork(
@@ -96,8 +107,20 @@ class iReflow(nn.Module):
         sigma = self.uncertainty_estimator(enc_features).permute(0, 2, 1)
         
         # 如果使用了归一化，sigma也需要相应缩放
+        # 改进：使用相对标准差，避免sigma过大
         if self.itransformer.use_norm:
-            sigma = sigma * stdev[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1)
+            # 使用相对标准差（相对于均值），让sigma更合理
+            # sigma = sigma * stdev[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1)
+            # 改进：使用较小的缩放因子，避免sigma过大
+            relative_std = stdev[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1)
+            # 限制sigma的最大值，避免过大
+            # 确保min和max都是Tensor，形状匹配
+            min_sigma = torch.full_like(sigma, 1e-6)
+            max_sigma = relative_std * 2.0
+            sigma = torch.clamp(sigma * relative_std, min=min_sigma, max=max_sigma)
+        else:
+            # 即使没有归一化，也限制sigma的范围
+            sigma = torch.clamp(sigma, min=1e-6, max=1.0)
         
         return enc_features, y_hat, sigma
     
@@ -158,14 +181,33 @@ class iReflow(nn.Module):
         # 可选: 点预测损失（辅助训练）
         point_loss = F.mse_loss(y_hat, y_gt)
         
-        # 总损失
-        total_loss = velocity_loss + 0.1 * point_loss
+        # 改进：加入最终预测损失（在训练时也进行采样，然后计算预测误差）
+        # 这样可以确保Velocity Network学习的方向是正确的
+        # 注意：不使用no_grad()，让prediction_loss也能参与反向传播
+        # 使用相同的epsilon进行采样（为了训练稳定性）
+        # 但在实际应用中，我们使用temperature=1.0来匹配训练分布
+        X_0_train = y_hat + epsilon * sigma
+        tau_train = torch.zeros(B, device=device)
+        v_train = self.velocity_net(X_0_train, tau_train, enc_features, y_hat, sigma)
+        y_pred_train = X_0_train + v_train
+        
+        # 最终预测损失
+        prediction_loss = F.mse_loss(y_pred_train, y_gt)
+        
+        # 改进：平衡各项损失
+        # velocity_loss: 确保速度场学习正确
+        # prediction_loss: 确保最终预测质量（权重更大）
+        # point_loss: 辅助损失，保持点预测质量
+        total_loss = velocity_loss + 0.5 * prediction_loss + 0.1 * point_loss
         
         loss_dict = {
             'total_loss': total_loss.item(),
             'velocity_loss': velocity_loss.item(),
+            'prediction_loss': prediction_loss.item(),
             'point_loss': point_loss.item(),
-            'mean_sigma': sigma.mean().item()
+            'mean_sigma': sigma.mean().item(),
+            'max_sigma': sigma.max().item(),
+            'min_sigma': sigma.min().item()
         }
         
         return total_loss, loss_dict
@@ -211,10 +253,13 @@ class iReflow(nn.Module):
                 X_pred = X_tau + v
             else:
                 # Multi-step Euler method
+                # 改进：使用更稳定的ODE求解方法
                 dt = 1.0 / self.num_sampling_steps
                 for i in range(self.num_sampling_steps):
-                    tau = torch.ones(B, device=device) * (i * dt)
+                    tau_val = i * dt
+                    tau = torch.ones(B, device=device) * tau_val
                     v = self.velocity_net(X_tau, tau, enc_features, y_hat, sigma)
+                    # Euler step
                     X_tau = X_tau + v * dt
                 X_pred = X_tau
             

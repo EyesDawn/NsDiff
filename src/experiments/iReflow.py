@@ -455,7 +455,8 @@ class iReflowExp(ProbForecastExp):
             )
         
         print(f'Loading iTransformer weights from {best_model_path}')
-        checkpoint = torch.load(best_model_path, map_location=self.device, weights_only=False)
+        # 使用 weights_only=True 因为 iTransformer checkpoint 只包含模型权重
+        checkpoint = torch.load(best_model_path, map_location=self.device, weights_only=True)
         
         # 处理嵌套字典的情况（checkpoint 可能包含 'model' 键）
         if isinstance(checkpoint, dict) and 'model' in checkpoint:
@@ -569,7 +570,8 @@ class iReflowExp(ProbForecastExp):
             )
         
         print(f'Loading model from {best_model_path}')
-        checkpoint = torch.load(best_model_path, map_location=self.device, weights_only=False)
+        # 使用 weights_only=True 因为 checkpoint 只包含模型权重（state_dict）
+        checkpoint = torch.load(best_model_path, map_location=self.device, weights_only=True)
         
         # 处理嵌套字典的情况（checkpoint 可能包含 'model' 键）
         if isinstance(checkpoint, dict) and 'model' in checkpoint:
@@ -628,8 +630,9 @@ class iReflowExp(ProbForecastExp):
     
     def _load_best_model(self):
         """加载最佳模型（从 run_save_dir）"""
+        # 使用 weights_only=True 因为 best_model.pth 只包含模型权重（state_dict）
         self.model.load_state_dict(
-            torch.load(self.best_checkpoint_filepath, map_location=self.device)
+            torch.load(self.best_checkpoint_filepath, map_location=self.device, weights_only=True)
         )
     
     def _save_run_check_point(self, seed):

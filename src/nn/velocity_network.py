@@ -150,16 +150,24 @@ class ConfidenceGating(nn.Module):
     """
     置信度门控层
     根据iTransformer的预测不确定性调节速度场的幅度
+    
+    改进：使用更合理的门控机制
+    - 高不确定性（大sigma）→ 大门控系数 → 允许更多修正
+    - 低不确定性（小sigma）→ 小门控系数 → 减少修正
+    - 但避免完全抑制修正（使用偏移量）
     """
     def __init__(self, pred_len, d_model):
         super(ConfidenceGating, self).__init__()
         # 将sigma映射到gate系数
+        # 改进：使用归一化的sigma来生成门控系数
         self.sigma_proj = nn.Sequential(
             nn.Linear(pred_len, d_model),
             nn.SiLU(),
             nn.Linear(d_model, d_model),
             nn.Sigmoid()
         )
+        # 添加一个可学习的偏移量，确保即使sigma很小时也有一定的修正
+        self.gate_bias = nn.Parameter(torch.ones(1, 1, d_model) * 0.3)  # 最小门控系数
     
     def forward(self, x, sigma):
         """
@@ -172,8 +180,20 @@ class ConfidenceGating(nn.Module):
         # sigma: [B, P, D] -> [B, D, P]
         sigma = sigma.permute(0, 2, 1)
         
+        # 归一化sigma（相对于batch和variable维度）
+        # 改进：使用相对不确定性，避免sigma尺度问题
+        sigma_mean = sigma.mean(dim=-1, keepdim=True)  # [B, D, 1]
+        sigma_std = sigma.std(dim=-1, keepdim=True) + 1e-6  # [B, D, 1]
+        sigma_norm = (sigma - sigma_mean) / sigma_std  # [B, D, P]
+        # 将归一化的sigma映射到[0, 1]范围
+        sigma_norm = torch.sigmoid(sigma_norm)  # [B, D, P]
+        
         # 计算门控系数
-        gate = self.sigma_proj(sigma)  # [B, D, d_model]
+        gate = self.sigma_proj(sigma_norm)  # [B, D, d_model]
+        
+        # 改进：添加偏移量，确保最小门控系数
+        gate = gate + self.gate_bias.to(x.device)
+        gate = torch.clamp(gate, min=0.1, max=1.0)  # 限制在[0.1, 1.0]范围内
         
         # 应用门控
         return x * gate

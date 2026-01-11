@@ -46,13 +46,13 @@ HORIZON=1
 # 设备配置
 DEVICE="cuda:2"
 
-SEEDS='[22,2023]'
+SEEDS='[2222,2023]'
 WANDB_PROJECT="iReflow-v1"
 CHECKPOINTS="./results/runs/iTransformer/"
 ITR=1
 
 # 运行实验
-python -u ./src/experiments/iReflow.py \
+python3 -u ./src/experiments/iReflow.py \
     --wandb_project ${WANDB_PROJECT} \
     --is_training ${IS_TRAINING} \
     --root_path ${ROOT_PATH} \

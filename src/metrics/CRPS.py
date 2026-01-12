@@ -1,7 +1,7 @@
 import torch
 from torchmetrics import Metric
-import CRPS.CRPS as pscore  # Assuming `pscore` is the function to compute CRPS
-from concurrent.futures import ProcessPoolExecutor
+import properscoring as ps  # Import standard library
+import numpy as np
 
 class CRPS(Metric):
     def __init__(self, dist_sync_on_step=False):
@@ -9,34 +9,31 @@ class CRPS(Metric):
         self.add_state("total_crps", default=torch.tensor(0.0), dist_reduce_fx="sum")
         self.add_state("total_samples", default=torch.tensor(0), dist_reduce_fx="sum")
 
-
-        # self.executor = ProcessPoolExecutor()
-        
-
     def update(self, pred: torch.Tensor, true: torch.Tensor):
         """
         Args:
-            pred: Tensor of predicted distributions, shape (B, O, N, S).
-            true: Tensor of true values, shape (B, O, N,).
+            pred: (B, O, N, S) - Samples from the predicted distribution
+            true: (B, O, N)    - True observations
         """
-        def compute_crps(i):
-            return pscore(pred_np[i], true_np[i]).compute()[0]
-
-        pred = pred.view(-1, pred.shape[3])  # Reshape to (B * O * N, S)
-        true = true.view(-1)  # Reshape to (B * O * N,)
+        # 1. Flatten dimensions: (Total_Points, Samples) vs (Total_Points,)
+        # Assuming S (Samples) is the last dimension
+        pred = pred.reshape(-1, pred.shape[-1])
+        true = true.reshape(-1)
         
-        pred_np = pred.cpu().numpy()
-        true_np = true.cpu().numpy()
+        # 2. Convert to Numpy (properscoring uses CPU/Numpy operations)
+        pred_np = pred.detach().cpu().numpy()
+        true_np = true.detach().cpu().numpy()
 
-        # crps_sum = sum(self.executor.map(compute_crps, range(len(true_np))))
+        # 3. Vectorized calculation
+        # crps_ensemble accepts array inputs and calculates CRPS for all points at once
+        # Much faster than for loops by several orders of magnitude
+        crps_values = ps.crps_ensemble(true_np, pred_np)
+
+        # 4. Accumulate results
+        batch_sum = crps_values.sum()
         
-        crps_sum = 0.0
-        for i in range(len(true_np)):
-            res = pscore(pred_np[i], true_np[i]).compute()
-            crps_sum += res[0]
-
-        self.total_crps += torch.tensor(crps_sum).to(self.device)
-        self.total_samples += pred.size(0)
+        self.total_crps += torch.tensor(batch_sum, device=self.device)
+        self.total_samples += torch.tensor(len(true_np), device=self.device)
 
     def compute(self):
         return self.total_crps / self.total_samples

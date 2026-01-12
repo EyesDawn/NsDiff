@@ -222,6 +222,7 @@ class iReflowExp(ProbForecastExp):
             pred: [B, P, D] 预测（点预测）
             true: [B, P, D] 真实值
             loss: scalar 损失
+            loss_dict: dict 包含详细损失和指标
         """
         # 前向传播
         loss, loss_dict, y_hat = self.model(
@@ -233,13 +234,21 @@ class iReflowExp(ProbForecastExp):
             mode='train'
         )
         
-        return y_hat, batch_y, loss
+        return y_hat, batch_y, loss, loss_dict
     
     def _train(self):
         """训练一个epoch"""
         with torch.enable_grad(), tqdm(total=len(self.train_loader.dataset)) as progress_bar:
             self.model.train()
             train_losses = []
+            # 收集所有批次的详细指标
+            train_metrics = {
+                'velocity_loss': [],
+                'prediction_loss': [],
+                'mean_sigma': [],
+                'max_sigma': [],
+                'min_sigma': []
+            }
             
             for i, (
                 batch_x,
@@ -259,7 +268,7 @@ class iReflowExp(ProbForecastExp):
                 self.model_optim.zero_grad()
                 
                 # 前向传播
-                pred, true, loss = self._process_train_batch(
+                pred, true, loss, loss_dict = self._process_train_batch(
                     batch_x, batch_y, batch_x_date_enc, batch_y_date_enc
                 )
                 
@@ -276,6 +285,11 @@ class iReflowExp(ProbForecastExp):
                 
                 train_losses.append(loss.item())
                 
+                # 收集详细指标
+                for key in train_metrics.keys():
+                    if key in loss_dict:
+                        train_metrics[key].append(loss_dict[key])
+                
                 # 更新进度条
                 progress_bar.set_postfix(
                     loss=loss.item(),
@@ -284,7 +298,9 @@ class iReflowExp(ProbForecastExp):
                 progress_bar.update(batch_x.shape[0])
         
         avg_train_loss = np.mean(train_losses)
-        return avg_train_loss
+        # 计算平均指标
+        avg_metrics = {key: np.mean(values) for key, values in train_metrics.items() if values}
+        return avg_train_loss, avg_metrics
     
     def _process_val_batch(self, batch_x, batch_y, batch_x_date_enc, batch_y_date_enc):
         """
@@ -723,7 +739,7 @@ class iReflowExp(ProbForecastExp):
             if self._check_run_exist(seed):
                 self._resume_run(seed)
 
-            self._run_print(f"run : {self.current_run} in seed: {seed}")
+            self._run_print(f"run : nss{self.num_sampling_steps}_temp{self.temperature} in seed: {seed}")
 
             parameter_tables, model_parameters_num = count_parameters(self.model)
             self._run_print(f"parameter_tables: {parameter_tables}")
@@ -743,13 +759,13 @@ class iReflowExp(ProbForecastExp):
 
                 # 可恢复的随机性
                 reproducible(seed + self.current_epoch)
-                train_losses = self._train()
+                train_loss, train_metrics = self._train()
                 self._run_print(
                     "Epoch: {} cost time: {}s".format(
                         self.current_epoch + 1, time.time() - epoch_start_time
                     )
                 )
-                self._run_print(f"Training loss : {np.mean(train_losses)}")
+                self._run_print(f"Training loss : {train_loss}")
 
                 val_result = self._val()
                 test_result = self._test()
@@ -765,7 +781,10 @@ class iReflowExp(ProbForecastExp):
                 self._save_run_check_point(seed)
 
                 if self._use_wandb():
-                    wandb.log({'training_loss': np.mean(train_losses)}, step=self.current_epoch)
+                    # 记录训练损失和详细指标
+                    wandb.log({'training_loss': train_loss}, step=self.current_epoch)
+                    for key, value in train_metrics.items():
+                        wandb.log({f"train_{key}": value}, step=self.current_epoch)
                     wandb.log({f"val_{k}": v for k, v in val_result.items()}, step=self.current_epoch)
                     wandb.log({f"test_{k}": v for k, v in test_result.items()}, step=self.current_epoch)
 
@@ -808,7 +827,7 @@ class iReflowExp(ProbForecastExp):
         if self._check_run_exist(seed):
             self._resume_run(seed)
 
-        self._run_print(f"run : {self.current_run} in seed: {seed}")
+        self._run_print(f"run : nss{self.num_sampling_steps}_temp{self.temperature} in seed: {seed}")
 
         parameter_tables, model_parameters_num = count_parameters(self.model)
         self._run_print(f"parameter_tables: {parameter_tables}")
@@ -828,13 +847,13 @@ class iReflowExp(ProbForecastExp):
 
             # 可恢复的随机性
             reproducible(seed + self.current_epoch)
-            train_losses = self._train()
+            train_loss, train_metrics = self._train()
             self._run_print(
                 "Epoch: {} cost time: {}s".format(
                     self.current_epoch + 1, time.time() - epoch_start_time
                 )
             )
-            self._run_print(f"Training loss : {np.mean(train_losses)}")
+            self._run_print(f"Training loss : {train_loss}")
 
             val_result = self._val()
             test_result = self._test()
@@ -850,7 +869,10 @@ class iReflowExp(ProbForecastExp):
             self._save_run_check_point(seed)
 
             if self._use_wandb():
-                wandb.log({'training_loss': np.mean(train_losses)}, step=self.current_epoch)
+                # 记录训练损失和详细指标
+                wandb.log({'training_loss': train_loss}, step=self.current_epoch)
+                for key, value in train_metrics.items():
+                    wandb.log({f"train_{key}": value}, step=self.current_epoch)
                 wandb.log({f"val_{k}": v for k, v in val_result.items()}, step=self.current_epoch)
                 wandb.log({f"test_{k}": v for k, v in test_result.items()}, step=self.current_epoch)
 
@@ -893,8 +915,10 @@ class iReflowExp(ProbForecastExp):
             print(f"\nEpoch {epoch + 1}/{self.epochs}")
             
             # 训练
-            train_loss = self._train()
+            train_loss, train_metrics = self._train()
             print(f"Train Loss: {train_loss:.6f}")
+            if train_metrics:
+                print(f"Train Metrics: {train_metrics}")
             
             # 验证
             val_loss = self._val()

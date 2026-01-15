@@ -167,19 +167,17 @@ class iReflowExp(ProbForecastExp):
         self.model = iReflow(self.model_configs).to(self.device)
         
         # 根据 is_training 参数决定训练哪些部分
+        # 注意：对于 is_training=1，冻结操作应该在加载预训练权重之后进行
+        # 因此这里先不冻结，冻结操作将在 _freeze_itransformer() 中进行
         if self.is_training == 1:
-            # 只训练 Velocity Network 和 Uncertainty Estimator
-            # 冻结 iTransformer 参数
-            for param in self.model.itransformer.parameters():
-                param.requires_grad = False
-            
             # 只优化 velocity_net 和 uncertainty_estimator 的参数
+            # iTransformer 的冻结将在加载权重后进行
             trainable_params = list(self.model.velocity_net.parameters()) + \
                              list(self.model.uncertainty_estimator.parameters())
             self.model_optim = torch.optim.Adam(
                 trainable_params, lr=self.learning_rate
             )
-            print("Initialized model: iTransformer frozen, only training Velocity Network and Uncertainty Estimator")
+            print("Initialized model: will freeze iTransformer after loading weights, only training Velocity Network and Uncertainty Estimator")
         else:
             # 训练整个模型（is_training=2 或默认情况）
             self.model_optim = torch.optim.Adam(
@@ -192,6 +190,13 @@ class iReflowExp(ProbForecastExp):
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             self.model_optim, mode='min', factor=0.5, patience=5
         )
+    
+    def _freeze_itransformer(self):
+        """冻结 iTransformer 参数（在加载预训练权重后调用）"""
+        if self.is_training == 1:
+            for param in self.model.itransformer.parameters():
+                param.requires_grad = False
+            print("iTransformer parameters frozen after loading pretrained weights")
         
         # 打印模型参数
         # num_params = count_parameters(self.model)
@@ -684,6 +689,10 @@ class iReflowExp(ProbForecastExp):
         if self.is_training == 0:
             print('>>>>>>>testing (no training) : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
             
+            # 先初始化 wandb（如果启用），以便记录测试结果
+            if self._use_wandb() and not self._init_wandb(self.project, seed):
+                return {}
+            
             # 需要先 setup_run 以初始化必要的路径和配置
             self._setup_run(seed)
             
@@ -702,9 +711,8 @@ class iReflowExp(ProbForecastExp):
             # 直接测试
             test_result = self._test()
             
+            # 记录测试结果到 wandb
             if self._use_wandb():
-                if not self._init_wandb(self.project, seed):
-                    return test_result
                 for k, v in test_result.items():
                     wandb.run.summary[f"test_{k}"] = v
                 wandb.finish()
@@ -723,11 +731,14 @@ class iReflowExp(ProbForecastExp):
             # 初始化数据加载器
             self._init_data_loader()
             
-            # 初始化模型（会自动冻结 iTransformer）
+            # 初始化模型（先不冻结，等加载权重后再冻结）
             self._init_model()
             
             # 加载 iTransformer 权重
             self._load_itransformer_only(setting)
+            
+            # 加载权重后再冻结 iTransformer（确保冻结的是预训练权重，而不是随机初始化）
+            self._freeze_itransformer()
             
             # 初始化指标
             self._init_metrics()

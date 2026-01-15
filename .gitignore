@@ -8,6 +8,7 @@ results
 dist
 build
 .vscode
+constraints.txt
 
 *.pth
 test_results

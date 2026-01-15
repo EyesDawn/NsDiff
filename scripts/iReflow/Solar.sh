@@ -46,8 +46,8 @@ HORIZON=1
 # 设备配置
 DEVICE="cuda:1"
 
-SEEDS='[2023]'
-WANDB_PROJECT="iReflow-v1"
+SEEDS='[2222,2023]'
+WANDB_PROJECT="iReflow-v2"
 CHECKPOINTS="./results/runs/iTransformer/"
 ITR=1
 

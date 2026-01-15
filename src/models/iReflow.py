@@ -147,67 +147,53 @@ class iReflow(nn.Module):
         B, P, D = y_gt.shape
         device = y_gt.device
         
-        # Stage 1: 获取条件信息
+        # Stage 1: 获取条件信息，计算负对数似然损失
         enc_features, y_hat, sigma = self.get_encoder_features(x_enc, x_mark_enc)
         
+        # Gaussian NLL Loss (防止 Sigma 坍缩为0)
+        # 为了数值稳定，防止除以0
+        var = sigma ** 2
+        nll_loss = 0.5 * torch.log(var + 1e-6) + 0.5 * (y_gt - y_hat)**2 / (var + 1e-6)
+        nll_loss = nll_loss.mean()
+
         # Stage 2: 构建Rectified Flow
         
         # 采样噪声 epsilon ~ N(0, I)
         epsilon = torch.randn_like(y_gt)
         
-        # Source State: X_0 = y_hat + epsilon * sigma
-        X_0 = y_hat + epsilon * sigma
+        # Source State: X_0 ~ N(y_hat, sigma^2)
+        # 我们不希望 Velocity Net 的 Loss 去反向修改 y_hat 和 sigma。
+        # 如果不 detach，Velocity Net 可能会为了好走直线，去扭曲 y_hat 的位置，导致点预测变差。
+        X_0 = y_hat.detach() + epsilon * sigma.detach()
         
         # Target State: X_1 = y_gt
         X_1 = y_gt
         
         # 采样时间步 tau ~ U[0, 1]
-        tau = torch.rand(B, device=device)
+        # 使用 Broadcasting 技巧避免 reshape
+        tau = torch.rand(B, 1, 1, device=device)
         
-        # Linear Interpolation: X_tau = tau * X_1 + (1 - tau) * X_0
-        tau_expanded = tau.view(B, 1, 1).expand(B, P, D)
-        X_tau = tau_expanded * X_1 + (1 - tau_expanded) * X_0
+        # Linear Interpolation: X_tau
+        X_tau = tau * X_1 + (1 - tau) * X_0
         
         # Ground Truth Velocity: v_target = X_1 - X_0
         v_target = X_1 - X_0
         
         # Stage 3: 预测速度场
-        v_pred = self.velocity_net(X_tau, tau, enc_features, y_hat, sigma)
+        v_pred = self.velocity_net(X_tau, tau.squeeze(), enc_features, y_hat.detach(), sigma.detach())
         
         # Stage 4: 计算损失
         # MSE Loss on velocity
         velocity_loss = F.mse_loss(v_pred, v_target)
         
-        # 可选: 点预测损失（辅助训练）
-        point_loss = F.mse_loss(y_hat, y_gt)
-        
-        # 改进：加入最终预测损失（在训练时也进行采样，然后计算预测误差）
-        # 这样可以确保Velocity Network学习的方向是正确的
-        # 注意：不使用no_grad()，让prediction_loss也能参与反向传播
-        # 使用相同的epsilon进行采样（为了训练稳定性）
-        # 但在实际应用中，我们使用temperature=1.0来匹配训练分布
-        X_0_train = y_hat + epsilon * sigma
-        tau_train = torch.zeros(B, device=device)
-        v_train = self.velocity_net(X_0_train, tau_train, enc_features, y_hat, sigma)
-        y_pred_train = X_0_train + v_train
-        
-        # 最终预测损失
-        prediction_loss = F.mse_loss(y_pred_train, y_gt)
-        
-        # 改进：平衡各项损失
-        # velocity_loss: 确保速度场学习正确
-        # prediction_loss: 确保最终预测质量（权重更大）
-        # point_loss: 辅助损失，保持点预测质量
-        total_loss = velocity_loss + 0.5 * prediction_loss + 0.1 * point_loss
-        
+        total_loss = nll_loss + 1.0 * velocity_loss
+
         loss_dict = {
             'total_loss': total_loss.item(),
             'velocity_loss': velocity_loss.item(),
-            'prediction_loss': prediction_loss.item(),
-            'point_loss': point_loss.item(),
+            'nll_loss': nll_loss.item(),
             'mean_sigma': sigma.mean().item(),
-            'max_sigma': sigma.max().item(),
-            'min_sigma': sigma.min().item()
+            'mae_point': F.l1_loss(y_hat, y_gt).item()
         }
         
         return total_loss, loss_dict

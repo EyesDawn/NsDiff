@@ -248,11 +248,11 @@ class iReflowExp(ProbForecastExp):
             train_losses = []
             # 收集所有批次的详细指标
             train_metrics = {
+                'total_loss': [],
                 'velocity_loss': [],
-                'prediction_loss': [],
+                'nll_loss': [],
                 'mean_sigma': [],
-                'max_sigma': [],
-                'min_sigma': []
+                'mae_point': []
             }
             
             for i, (

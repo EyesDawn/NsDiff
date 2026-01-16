@@ -52,7 +52,7 @@ class ProbForecastExp(ForecastExp):
         self.metrics = MetricCollection(
             metrics={
                 "crps": CRPS(),
-                "crps_sum": CRPSSum(),
+                "crps_sum": CRPSSum(normalize=True),
                 "qice": QICE(),
                 "picp": PICP(),
                 "mse": ProbMSE(),

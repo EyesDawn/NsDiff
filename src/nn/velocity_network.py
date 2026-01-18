@@ -114,6 +114,7 @@ class VariateCrossAttentionLayer(nn.Module):
         # Adaptive LayerNorm for time injection
         self.ada_norm1 = AdaptiveLayerNorm(d_model)
         self.ada_norm2 = AdaptiveLayerNorm(d_model)
+        self.ada_norm3 = AdaptiveLayerNorm(d_model)
     
     def forward(self, x, enc_features, time_emb):
         """
@@ -132,18 +133,18 @@ class VariateCrossAttentionLayer(nn.Module):
         
         # Cross-Attention
         residual = x
-        x = self.norm1(x)
+        x = self.ada_norm2(x, time_emb)
         new_x, _ = self.cross_attention(x, enc_features, enc_features, attn_mask=None)
         x = residual + self.dropout(new_x)
         
         # Feed-Forward with time-adaptive norm
         residual = x
-        y = self.ada_norm2(x, time_emb)
+        x = self.ada_norm3(x, time_emb)
         y = self.dropout(self.activation(self.conv1(y.transpose(-1, 1))))
         y = self.dropout(self.conv2(y).transpose(-1, 1))
         x = residual + y
         
-        return self.norm3(x)
+        return x
 
 
 class ConfidenceGating(nn.Module):

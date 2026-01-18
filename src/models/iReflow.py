@@ -21,6 +21,12 @@ class iReflow(nn.Module):
         self.pred_len = configs.pred_len
         self.d_model = configs.d_model
         
+        # 损失权重配置（可调整的超参数）
+        self.nll_loss_weight = getattr(configs, 'nll_loss_weight', 1.0)
+        self.velocity_loss_weight = getattr(configs, 'velocity_loss_weight', 1.0)
+        # 调试用：记录 sigma / 误差 的统计量，帮助定位 NLL 异常偏大的原因
+        self.log_sigma_stats = getattr(configs, 'log_sigma_stats', False)
+        
         # Stage 1: iTransformer as Conditioner
         self.itransformer = iTransformer(configs)
         
@@ -31,7 +37,7 @@ class iReflow(nn.Module):
         self.uncertainty_estimator = nn.Sequential(
             nn.Linear(configs.d_model, configs.d_model // 2),
             nn.ReLU(),
-            nn.Dropout(configs.dropout if hasattr(configs, 'dropout') else 0.1),
+            # nn.Dropout(configs.dropout if hasattr(configs, 'dropout') else 0.1),
             nn.Linear(configs.d_model // 2, configs.pred_len),
             nn.Softplus()  # 确保sigma > 0
         )
@@ -40,7 +46,7 @@ class iReflow(nn.Module):
         # 使用较小的初始值，避免sigma过大导致训练不稳定
         for m in self.uncertainty_estimator.modules():
             if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight, gain=0.1)  # 较小的gain，让sigma初始值较小
+                nn.init.xavier_uniform_(m.weight, gain=0.01)  # 较小的gain，让sigma初始值较小
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0.0)
         
@@ -59,7 +65,7 @@ class iReflow(nn.Module):
         
     def get_encoder_features(self, x_enc, x_mark_enc):
         """
-        获取iTransformer编码器的变量特征H
+        获取iTransformer编码器的变量特征H，点预测和不确定性
         
         Args:
             x_enc: [B, L, D] 历史序列
@@ -98,29 +104,28 @@ class iReflow(nn.Module):
         y_hat_full = self.itransformer.projector(enc_features_full).permute(0, 2, 1)  # [B, P, D+T]
         y_hat = y_hat_full[:, :, :N]  # [B, P, D] 过滤协变量
         
+        # obtain raw output
+        raw_sigma_full = self.uncertainty_estimator(enc_features_full).permute(0, 2, 1)  # [B, P, D+T]
+
+        # 过滤协变量：只保留前N个变量（原始变量），去掉时间特征
+        raw_sigma = raw_sigma_full[:, :, :N]  # [B, P, D]
+
+        # 使用 Softplus 激活，保证正定性，且梯度平滑
+        sigma_pre_scale = F.softplus(raw_sigma, beta=1.0)
+
         # 反归一化
         if self.itransformer.use_norm:
-            y_hat = y_hat * stdev[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1)
-            y_hat = y_hat + means[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1)
-        
-        # 估计不确定性: [B, D, d_model] -> [B, D, P] -> [B, P, D]
-        sigma = self.uncertainty_estimator(enc_features).permute(0, 2, 1)
-        
-        # 如果使用了归一化，sigma也需要相应缩放
-        # 改进：使用相对标准差，避免sigma过大
-        if self.itransformer.use_norm:
-            # 使用相对标准差（相对于均值），让sigma更合理
-            # sigma = sigma * stdev[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1)
-            # 改进：使用较小的缩放因子，避免sigma过大
-            relative_std = stdev[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1)
-            # 限制sigma的最大值，避免过大
-            # 确保min和max都是Tensor，形状匹配
-            min_sigma = torch.full_like(sigma, 1e-6)
-            max_sigma = relative_std * 2.0
-            sigma = torch.clamp(sigma * relative_std, min=min_sigma, max=max_sigma)
+            scale_factor = stdev[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1)
+            mean_factor = means[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1)
+
+            y_hat = y_hat * scale_factor + mean_factor
+
+            # 乘以scale_factor为了恢复物理量纲，加上1e-6避免sigma为0
+            sigma = sigma_pre_scale * scale_factor + 1e-6
+
         else:
-            # 即使没有归一化，也限制sigma的范围
-            sigma = torch.clamp(sigma, min=1e-6, max=1.0)
+            # 没有归一化，直接加上1e-6避免sigma为0
+            sigma = sigma_pre_scale + 1e-6
         
         return enc_features, y_hat, sigma
     
@@ -133,9 +138,7 @@ class iReflow(nn.Module):
         - X_1 = y_gt (Target State)
         - X_tau = tau * X_1 + (1 - tau) * X_0 (Linear Interpolation)
         - v_target = X_1 - X_0 (Ground Truth Velocity)
-        
-        Loss: E[||v_theta(X_tau, tau | H, sigma) - (X_1 - X_0)||^2]
-        
+                
         Args:
             x_enc: [B, L, D] 历史序列
             x_mark_enc: [B, L, T] 时间标记
@@ -151,9 +154,10 @@ class iReflow(nn.Module):
         enc_features, y_hat, sigma = self.get_encoder_features(x_enc, x_mark_enc)
         
         # Gaussian NLL Loss (防止 Sigma 坍缩为0)
-        # 为了数值稳定，防止除以0
+        # 改进：使用更稳定的数值计算
         var = sigma ** 2
-        nll_loss = 0.5 * torch.log(var + 1e-6) + 0.5 * (y_gt - y_hat)**2 / (var + 1e-6)
+        eps = 1e-6  # 数值稳定性常数
+        nll_loss = 0.5 * torch.log(var + eps) + 0.5 * (y_gt - y_hat)**2 / (var + eps)
         nll_loss = nll_loss.mean()
 
         # Stage 2: 构建Rectified Flow
@@ -183,10 +187,12 @@ class iReflow(nn.Module):
         v_pred = self.velocity_net(X_tau, tau.squeeze(), enc_features, y_hat.detach(), sigma.detach())
         
         # Stage 4: 计算损失
-        # MSE Loss on velocity
+        # Velocity Loss: 预测速度场与真实速度场的差异
+        # 使用MSE Loss（可以尝试Huber Loss以提高鲁棒性）
         velocity_loss = F.mse_loss(v_pred, v_target)
         
-        total_loss = nll_loss + 1.0 * velocity_loss
+        # 总损失：使用可配置的权重平衡两个损失项
+        total_loss = self.nll_loss_weight * nll_loss + self.velocity_loss_weight * velocity_loss
 
         loss_dict = {
             'total_loss': total_loss.item(),
@@ -195,6 +201,35 @@ class iReflow(nn.Module):
             'mean_sigma': sigma.mean().item(),
             'mae_point': F.l1_loss(y_hat, y_gt).item()
         }
+
+        # 可选：输出更多统计以定位 “mean_sigma 正常但 nll 很大” 的情况
+        # 典型原因是 sigma 在少量位置极小（或误差在少量位置极大），NLL 的二次项会被极端值主导。
+        if self.log_sigma_stats:
+            with torch.no_grad():
+                sigma_det = sigma.detach()
+                var_det = var.detach()
+                err = (y_gt - y_hat).detach()
+                abs_err = err.abs()
+                quad = (err ** 2) / (var_det + eps)  # (e^2 / sigma^2)
+
+                # flatten 后统计（避免维度歧义）
+                sigma_flat = sigma_det.reshape(-1)
+                abs_err_flat = abs_err.reshape(-1)
+                quad_flat = quad.reshape(-1)
+
+                # quantile 可能稍慢，但调试阶段很有价值
+                loss_dict.update({
+                    'sigma_min': sigma_flat.min().item(),
+                    'sigma_max': sigma_flat.max().item(),
+                    'sigma_p01': torch.quantile(sigma_flat, 0.01).item(),
+                    'sigma_p50': torch.quantile(sigma_flat, 0.50).item(),
+                    'sigma_p99': torch.quantile(sigma_flat, 0.99).item(),
+                    'abs_err_p99': torch.quantile(abs_err_flat, 0.99).item(),
+                    'quad_p99': torch.quantile(quad_flat, 0.99).item(),
+                    # 分解 NLL 的两部分，看看是谁在主导
+                    'nll_log_term': (0.5 * torch.log(var_det + eps)).mean().item(),
+                    'nll_quad_term': (0.5 * quad).mean().item(),
+                })
         
         return total_loss, loss_dict
     

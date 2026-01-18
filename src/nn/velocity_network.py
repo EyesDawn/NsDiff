@@ -159,15 +159,14 @@ class ConfidenceGating(nn.Module):
     def __init__(self, pred_len, d_model):
         super(ConfidenceGating, self).__init__()
         # 将sigma映射到gate系数
-        # 改进：使用归一化的sigma来生成门控系数
         self.sigma_proj = nn.Sequential(
-            nn.Linear(pred_len, d_model),
+            nn.Linear(pred_len, d_model // 2),
             nn.SiLU(),
-            nn.Linear(d_model, d_model),
+            nn.Linear(d_model // 2, d_model),
             nn.Sigmoid()
         )
-        # 添加一个可学习的偏移量，确保即使sigma很小时也有一定的修正
-        self.gate_bias = nn.Parameter(torch.ones(1, 1, d_model) * 0.3)  # 最小门控系数
+        # bias 初始值为0，使得初始门控系数为0.5
+        self.gate_bias = nn.Parameter(torch.zeros(1, 1, d_model))  # 最小门控系数
     
     def forward(self, x, sigma):
         """
@@ -180,22 +179,18 @@ class ConfidenceGating(nn.Module):
         # sigma: [B, P, D] -> [B, D, P]
         sigma = sigma.permute(0, 2, 1)
         
-        # 归一化sigma（相对于batch和variable维度）
-        # 改进：使用相对不确定性，避免sigma尺度问题
-        sigma_mean = sigma.mean(dim=-1, keepdim=True)  # [B, D, 1]
-        sigma_std = sigma.std(dim=-1, keepdim=True) + 1e-6  # [B, D, 1]
-        sigma_norm = (sigma - sigma_mean) / sigma_std  # [B, D, P]
-        # 将归一化的sigma映射到[0, 1]范围
-        sigma_norm = torch.sigmoid(sigma_norm)  # [B, D, P]
+        # 使用 log 变换处理 sigma 的量级差异
+        sigma_log = torch.log(sigma + 1e-6)
         
         # 计算门控系数
-        gate = self.sigma_proj(sigma_norm)  # [B, D, d_model]
+        gate = self.sigma_proj(sigma_log)  # [B, D, d_model]
         
         # 改进：添加偏移量，确保最小门控系数
         gate = gate + self.gate_bias.to(x.device)
-        gate = torch.clamp(gate, min=0.1, max=1.0)  # 限制在[0.1, 1.0]范围内
+
+        # 限制在[0.01, 1.0]范围内，避免完全抑制修正
+        gate = torch.clamp(gate, min=0.01, max=1.0)
         
-        # 应用门控
         return x * gate
 
 
@@ -245,13 +240,18 @@ class VelocityNetwork(nn.Module):
         Returns:
             v: [B, P, D] 速度场
         """
-        B, P, D = x_tau.shape
         
         # Step 1: Inverted Embedding
         # [B, P, D] -> [B, D, P]
         x = x_tau.permute(0, 2, 1)
+        y_anchor = y_hat.permute(0, 2, 1)
+        
         # [B, D, P] -> [B, D, d_model]
-        x = self.value_embedding(x)
+        x_emb = self.value_embedding(x)
+        y_emb = self.value_embedding(y_anchor)
+
+        # 显式注入 y_hat 信息，帮助模型理解预测的相对位置
+        x = x_emb + y_emb
         x = self.dropout_emb(x)
         
         # Step 2: Time Embedding

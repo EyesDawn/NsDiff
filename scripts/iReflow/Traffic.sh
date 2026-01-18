@@ -30,8 +30,13 @@ DROPOUT=0.1
 IS_TRAINING=1
 BATCH_SIZE=16
 LEARNING_RATE=0.001
-EPOCHS=10
-PATIENCE=3
+EPOCHS=30
+PATIENCE=6
+
+# 损失权重配置
+NLL_LOSS_WEIGHT=1
+VELOCITY_LOSS_WEIGHT=1.0
+LOG_SIGMA_STATS=True
 
 # Flow配置
 NUM_SAMPLING_STEPS=5
@@ -48,7 +53,7 @@ GPU_ID=0
 export CUDA_VISIBLE_DEVICES=${GPU_ID}
 DEVICE="cuda:0"
 
-SEEDS='[2222,2023]'
+SEEDS='[2222]'
 WANDB_PROJECT="iReflow-v2"
 CHECKPOINTS="./results/runs/iTransformer/"
 ITR=1
@@ -84,6 +89,9 @@ python3 -u ./src/experiments/iReflow.py \
     --num_sampling_steps ${NUM_SAMPLING_STEPS} \
     --temperature ${TEMPERATURE} \
     --num_samples ${NUM_SAMPLES} \
+    --nll_loss_weight ${NLL_LOSS_WEIGHT} \
+    --velocity_loss_weight ${VELOCITY_LOSS_WEIGHT} \
+    --log_sigma_stats ${LOG_SIGMA_STATS} \
     --device ${DEVICE} \
     runs --seeds="${SEEDS}"
 

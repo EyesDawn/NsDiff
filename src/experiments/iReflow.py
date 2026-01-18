@@ -95,6 +95,11 @@ class iReflowExp(ProbForecastExp):
     batch_size: int = 32
     patience: int = 10
     
+    # 损失权重配置
+    nll_loss_weight: float = 1.0  # NLL损失的权重
+    velocity_loss_weight: float = 1.0  # Velocity损失的权重
+    log_sigma_stats: bool = False  # 是否记录sigma统计信息（用于调试）
+    
     # Flow配置
     num_sampling_steps: int = 1  # ODE求解步数，1表示one-step generation
     temperature: float = 1.0  # 采样温度
@@ -142,6 +147,12 @@ class iReflowExp(ProbForecastExp):
         if getattr(self, "wandb_project", None):
             # ForecastExp.config_wandb 会设置 self.project 与 self.wandb
             self.config_wandb(self.wandb_project)
+        
+        # 7) learning_rate -> lr（父类 ForecastExp 使用 lr 参数）
+        # 将 learning_rate 同步到 lr，确保使用统一的学习率参数
+        # 这样既兼容 --learning_rate 命令行参数，又统一使用父类的 lr
+        if hasattr(self, "learning_rate"):
+            self.lr = self.learning_rate
 
         # 创建模型配置
         self.model_configs = argparse.Namespace()
@@ -161,6 +172,10 @@ class iReflowExp(ProbForecastExp):
         self.model_configs.class_strategy = self.class_strategy
         self.model_configs.factor = self.factor
         self.model_configs.num_sampling_steps = self.num_sampling_steps
+        # 损失权重配置
+        self.model_configs.nll_loss_weight = getattr(self, 'nll_loss_weight', 1.0)
+        self.model_configs.velocity_loss_weight = getattr(self, 'velocity_loss_weight', 1.0)
+        self.model_configs.log_sigma_stats = getattr(self, 'log_sigma_stats', False)
     
     def _init_model(self):
         """初始化模型"""
@@ -175,20 +190,20 @@ class iReflowExp(ProbForecastExp):
             trainable_params = list(self.model.velocity_net.parameters()) + \
                              list(self.model.uncertainty_estimator.parameters())
             self.model_optim = torch.optim.Adam(
-                trainable_params, lr=self.learning_rate
+                trainable_params, lr=self.lr
             )
             print("Initialized model: will freeze iTransformer after loading weights, only training Velocity Network and Uncertainty Estimator")
         else:
             # 训练整个模型（is_training=2 或默认情况）
             self.model_optim = torch.optim.Adam(
-                self.model.parameters(), lr=self.learning_rate
+                self.model.parameters(), lr=self.lr
             )
             if self.is_training == 2:
                 print("Initialized model: training entire model (iTransformer + Velocity Network)")
         
         # 学习率调度器
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            self.model_optim, mode='min', factor=0.5, patience=5
+            self.model_optim, mode='min', factor=0.5, patience=2
         )
     
     def _freeze_itransformer(self):
@@ -246,14 +261,8 @@ class iReflowExp(ProbForecastExp):
         with torch.enable_grad(), tqdm(total=len(self.train_loader.dataset)) as progress_bar:
             self.model.train()
             train_losses = []
-            # 收集所有批次的详细指标
-            train_metrics = {
-                'total_loss': [],
-                'velocity_loss': [],
-                'nll_loss': [],
-                'mean_sigma': [],
-                'mae_point': []
-            }
+            # 动态收集所有批次的详细指标（初始化为空字典，第一次迭代时初始化）
+            train_metrics = {}
             
             for i, (
                 batch_x,
@@ -290,10 +299,11 @@ class iReflowExp(ProbForecastExp):
                 
                 train_losses.append(loss.item())
                 
-                # 收集详细指标
-                for key in train_metrics.keys():
-                    if key in loss_dict:
-                        train_metrics[key].append(loss_dict[key])
+                # 动态收集所有指标（包括log_sigma_stats添加的额外统计量）
+                for key, value in loss_dict.items():
+                    if key not in train_metrics:
+                        train_metrics[key] = []
+                    train_metrics[key].append(value)
                 
                 # 更新进度条
                 progress_bar.set_postfix(
@@ -350,6 +360,8 @@ class iReflowExp(ProbForecastExp):
         # 计算验证损失（用于学习率调度）
         self.model.eval()
         val_losses = []
+        # 动态收集验证阶段的详细指标
+        val_metrics = {}
         with torch.no_grad():
             for batch_x, batch_y, origin_x, origin_y, batch_x_date_enc, batch_y_date_enc in self.val_loader:
                 batch_x = batch_x.to(self.device).float()
@@ -367,12 +379,22 @@ class iReflowExp(ProbForecastExp):
                     mode='train'
                 )
                 val_losses.append(loss.item())
+                
+                # 收集验证阶段的详细指标（包括log_sigma_stats添加的额外统计量）
+                for key, value in loss_dict.items():
+                    if key not in val_metrics:
+                        val_metrics[key] = []
+                    val_metrics[key].append(value)
         
         # 调用基类的_val()方法获取概率预测指标
         result = super()._val()
         
-        # 添加平均损失
+        # 添加平均损失和详细指标
         result['loss'] = np.mean(val_losses)
+        # 计算平均指标并添加到结果中（不添加val_前缀，因为wandb.log会统一添加）
+        for key, values in val_metrics.items():
+            if values:
+                result[key] = np.mean(values)
         
         # 清理标志
         delattr(self, '_num_samples_for_eval')
@@ -485,12 +507,12 @@ class iReflowExp(ProbForecastExp):
             checkpoint = checkpoint['model']
         
         # 打印 checkpoint 的键名以便调试
-        checkpoint_keys = list(checkpoint.keys())
-        print(f'Checkpoint keys (all {len(checkpoint_keys)} keys): {checkpoint_keys}')
+        # checkpoint_keys = list(checkpoint.keys())
+        # print(f'Checkpoint keys (all {len(checkpoint_keys)} keys): {checkpoint_keys}')
         
         # 检查是否是 iTransformer checkpoint（键名包含 enc_embedding, encoder, projector）
         # 还是 iReflow checkpoint（包含 itransformer, velocity_net 等）
-        checkpoint_keys_str = ' '.join(str(k) for k in checkpoint.keys())
+        # checkpoint_keys_str = ' '.join(str(k) for k in checkpoint.keys())
         is_itransformer_checkpoint = any(
             key.startswith('enc_embedding') or 
             key.startswith('encoder') or 
@@ -696,16 +718,7 @@ class iReflowExp(ProbForecastExp):
             # 需要先 setup_run 以初始化必要的路径和配置
             self._setup_run(seed)
             
-            # 初始化数据加载器
-            self._init_data_loader()
-            
-            # 初始化模型
-            self._init_model()
-            
-            # 初始化指标
-            self._init_metrics()
-            
-            # 从 checkpoints 加载模型
+            # 从 checkpoints 加载模型（_setup_run 已经初始化了模型、数据加载器和指标）
             self._load_checkpoint_model(setting)
             
             # 直接测试
@@ -728,23 +741,11 @@ class iReflowExp(ProbForecastExp):
             
             self._setup_run(seed)
             
-            # 初始化数据加载器
-            self._init_data_loader()
-            
-            # 初始化模型（先不冻结，等加载权重后再冻结）
-            self._init_model()
-            
-            # 加载 iTransformer 权重
+            # 加载 iTransformer 权重（_setup_run 已经初始化了模型）
             self._load_itransformer_only(setting)
             
             # 加载权重后再冻结 iTransformer（确保冻结的是预训练权重，而不是随机初始化）
             self._freeze_itransformer()
-            
-            # 初始化指标
-            self._init_metrics()
-            
-            # 设置早停和检查点路径
-            self._setup_early_stopper()
             
             # 检查并恢复运行检查点（需要在模型初始化之后）
             if self._check_run_exist(seed):
@@ -753,8 +754,8 @@ class iReflowExp(ProbForecastExp):
             self._run_print(f"run : nss{self.num_sampling_steps}_temp{self.temperature} in seed: {seed}")
 
             parameter_tables, model_parameters_num = count_parameters(self.model)
-            self._run_print(f"parameter_tables: {parameter_tables}")
-            self._run_print(f"model parameters: {model_parameters_num}")
+            # self._run_print(f"parameter_tables: {parameter_tables}")
+            # self._run_print(f"model parameters: {model_parameters_num}")
 
             if self._use_wandb():
                 wandb.run.summary["parameters"] = model_parameters_num
@@ -788,6 +789,17 @@ class iReflowExp(ProbForecastExp):
                 
                 # 学习率调度
                 self.scheduler.step(val_result['loss'])
+                
+                # 获取当前学习率
+                previous_lr = self.model_optim.param_groups[0]['lr']
+                current_lr = self.model_optim.param_groups[0]['lr']
+                if current_lr != previous_lr:
+                    self._run_print(f"Learning rate reduced: {previous_lr:.8f} -> {current_lr:.8f}")
+                else:
+                    self._run_print(f"Learning rate : {current_lr:.8f}")
+                
+                # 打印验证损失以便调试
+                self._run_print(f"Validation loss : {val_result['loss']:.6f}")
 
                 self._save_run_check_point(seed)
 
@@ -798,6 +810,8 @@ class iReflowExp(ProbForecastExp):
                         wandb.log({f"train_{key}": value}, step=self.current_epoch)
                     wandb.log({f"val_{k}": v for k, v in val_result.items()}, step=self.current_epoch)
                     wandb.log({f"test_{k}": v for k, v in test_result.items()}, step=self.current_epoch)
+                    # 记录学习率（使用 lr 以与父类配置保持一致）
+                    wandb.log({'lr': current_lr}, step=self.current_epoch)
 
             self._load_best_model()
             best_test_result = self._test()
@@ -822,27 +836,15 @@ class iReflowExp(ProbForecastExp):
         
         self._setup_run(seed)
         
-        # 初始化数据加载器
-        self._init_data_loader()
-        
-        # 初始化模型（训练整个模型）
-        self._init_model()
-        
-        # 初始化指标
-        self._init_metrics()
-        
-        # 设置早停和检查点路径
-        self._setup_early_stopper()
-        
-        # 检查并恢复运行检查点（需要在模型初始化之后）
+        # 检查并恢复运行检查点（_setup_run 已经初始化了模型、数据加载器、指标和早停器）
         if self._check_run_exist(seed):
             self._resume_run(seed)
 
         self._run_print(f"run : nss{self.num_sampling_steps}_temp{self.temperature} in seed: {seed}")
 
         parameter_tables, model_parameters_num = count_parameters(self.model)
-        self._run_print(f"parameter_tables: {parameter_tables}")
-        self._run_print(f"model parameters: {model_parameters_num}")
+        # self._run_print(f"parameter_tables: {parameter_tables}")
+        # self._run_print(f"model parameters: {model_parameters_num}")
 
         if self._use_wandb():
             wandb.run.summary["parameters"] = model_parameters_num
@@ -876,6 +878,17 @@ class iReflowExp(ProbForecastExp):
             
             # 学习率调度
             self.scheduler.step(val_result['loss'])
+            
+            # 获取当前学习率
+            previous_lr = self.model_optim.param_groups[0]['lr']
+            current_lr = self.model_optim.param_groups[0]['lr']
+            if current_lr != previous_lr:
+                self._run_print(f"Learning rate reduced: {previous_lr:.8f} -> {current_lr:.8f}")
+            else:
+                self._run_print(f"Learning rate : {current_lr:.8f}")
+            
+            # 打印验证损失以便调试
+            self._run_print(f"Validation loss : {val_result['loss']:.6f}")
 
             self._save_run_check_point(seed)
 
@@ -886,6 +899,8 @@ class iReflowExp(ProbForecastExp):
                     wandb.log({f"train_{key}": value}, step=self.current_epoch)
                 wandb.log({f"val_{k}": v for k, v in val_result.items()}, step=self.current_epoch)
                 wandb.log({f"test_{k}": v for k, v in test_result.items()}, step=self.current_epoch)
+                # 记录学习率（使用 lr 以与父类配置保持一致）
+                wandb.log({'lr': current_lr}, step=self.current_epoch)
 
         self._load_best_model()
         best_test_result = self._test()
@@ -905,6 +920,7 @@ class iReflowExp(ProbForecastExp):
         
         # 初始化数据加载器
         print("\nInitializing data loaders...")
+        # self._init_data_loader(shuffle=True, fast_test=False, fast_val=False)
         self._init_data_loader()
         
         # 初始化模型

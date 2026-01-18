@@ -188,7 +188,7 @@ class iReflowExp(ProbForecastExp):
         
         # 学习率调度器
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            self.model_optim, mode='min', factor=0.5, patience=5
+            self.model_optim, mode='min', factor=0.5, patience=2
         )
     
     def _freeze_itransformer(self):
@@ -934,14 +934,15 @@ class iReflowExp(ProbForecastExp):
                 print(f"Train Metrics: {train_metrics}")
             
             # 验证
-            val_loss = self._val()
-            print(f"Val Loss: {val_loss:.6f}")
+            val_result = self._val()
+            print(f"Val Loss: {val_result['loss']:.6f}")
+            print(f"Val CRPS: {val_result['crps']:.6f}")
             
-            # 学习率调度
-            self.scheduler.step(val_loss)
+            # 学习率调度（使用验证损失）
+            self.scheduler.step(val_result['loss'])
             
-            # Early Stopping
-            self.early_stopping(val_loss, self.model)
+            # Early Stopping（使用CRPS作为早停指标，与run()方法保持一致）
+            self.early_stopping(val_result['crps'], self.model)
             if self.early_stopping.early_stop:
                 print("Early stopping triggered")
                 break

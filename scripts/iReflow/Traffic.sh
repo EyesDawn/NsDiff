@@ -73,7 +73,7 @@ python3 -u ./src/experiments/iReflow.py \
     --d_model ${D_MODEL} \
     --d_ff ${D_FF} \
     --batch_size ${BATCH_SIZE} \
-    --learning_rate ${LEARNING_RATE} \
+    --lr ${LEARNING_RATE} \
     --itr ${ITR} \
     --checkpoints ${CHECKPOINTS} \
     --flow_layers ${FLOW_LAYERS} \

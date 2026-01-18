@@ -90,7 +90,7 @@ class iReflowExp(ProbForecastExp):
     
     # 训练配置
     is_training: int = 1
-    learning_rate: float = 0.0001
+    lr: float = 0.0001
     epochs: int = 100
     batch_size: int = 32
     patience: int = 10
@@ -175,13 +175,13 @@ class iReflowExp(ProbForecastExp):
             trainable_params = list(self.model.velocity_net.parameters()) + \
                              list(self.model.uncertainty_estimator.parameters())
             self.model_optim = torch.optim.Adam(
-                trainable_params, lr=self.learning_rate
+                trainable_params, lr=self.lr
             )
             print("Initialized model: will freeze iTransformer after loading weights, only training Velocity Network and Uncertainty Estimator")
         else:
             # 训练整个模型（is_training=2 或默认情况）
             self.model_optim = torch.optim.Adam(
-                self.model.parameters(), lr=self.learning_rate
+                self.model.parameters(), lr=self.lr
             )
             if self.is_training == 2:
                 print("Initialized model: training entire model (iTransformer + Velocity Network)")
@@ -252,6 +252,8 @@ class iReflowExp(ProbForecastExp):
                 'velocity_loss': [],
                 'nll_loss': [],
                 'mean_sigma': [],
+                'min_sigma': [],
+                'max_sigma': [],
                 'mae_point': []
             }
             

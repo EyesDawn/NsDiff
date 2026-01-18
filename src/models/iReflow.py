@@ -193,6 +193,8 @@ class iReflow(nn.Module):
             'velocity_loss': velocity_loss.item(),
             'nll_loss': nll_loss.item(),
             'mean_sigma': sigma.mean().item(),
+            'min_sigma': sigma.min().item(),
+            'max_sigma': sigma.max().item(),
             'mae_point': F.l1_loss(y_hat, y_gt).item()
         }
         

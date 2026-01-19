@@ -166,8 +166,12 @@ class ConfidenceGating(nn.Module):
             nn.Linear(d_model, d_model),
             nn.Sigmoid()
         )
-        # 添加一个可学习的偏移量，确保即使sigma很小时也有一定的修正
-        self.gate_bias = nn.Parameter(torch.ones(1, 1, d_model) * 0.3)  # 最小门控系数
+        # 添加偏移量，确保即使 sigma 很小时也有一定的修正。
+        # 稳定性改进：原先 gate_bias 是 unconstrained 的可学习参数，训练中可能变成负数，
+        # 导致 gate 整体塌缩（你观测到 gate_mean 可掉到 < 0.3），进而触发 loss 反弹/发散。
+        # 这里改为“带下界”的可学习偏移：gate_bias >= gate_bias_min。
+        self.gate_bias_min = 0.3
+        self.gate_bias_raw = nn.Parameter(torch.zeros(1, 1, d_model))  # softplus 后为正，初始约等于 0.693
     
     def forward(self, x, sigma):
         """
@@ -195,9 +199,10 @@ class ConfidenceGating(nn.Module):
         # 计算门控系数
         gate = self.sigma_proj(sigma_norm)  # [B, D, d_model]
         
-        # 改进：添加偏移量，确保最小门控系数
-        gate = gate + self.gate_bias.to(x.device)
-        gate = torch.clamp(gate, min=0.1, max=1.0)  # 限制在[0.1, 1.0]范围内
+        # 改进：添加带下界的偏移量，确保最小门控系数
+        gate_bias = self.gate_bias_min + F.softplus(self.gate_bias_raw).to(x.device)  # >= gate_bias_min
+        gate = gate + gate_bias
+        gate = torch.clamp(gate, min=self.gate_bias_min, max=1.0)  # 限制在[gate_bias_min, 1.0]范围内
 
         # 记录 gate 统计量（用于 wandb / 调试）
         # 注意：这里不参与反向传播，且做全局统计（跨 B, D, d_model）

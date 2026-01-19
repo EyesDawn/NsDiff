@@ -48,7 +48,7 @@ GPU_ID=0
 export CUDA_VISIBLE_DEVICES=${GPU_ID}
 DEVICE="cuda:0"
 
-SEEDS='[2224]'
+SEEDS='[2223]'
 WANDB_PROJECT="iReflow-v2"
 CHECKPOINTS="./results/runs/iTransformer/"
 ITR=1

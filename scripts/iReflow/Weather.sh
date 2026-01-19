@@ -48,7 +48,7 @@ GPU_ID=0
 export CUDA_VISIBLE_DEVICES=${GPU_ID}
 DEVICE="cuda:0"
 
-SEEDS='[2222,2026]'
+SEEDS='[2220]'
 WANDB_PROJECT="iReflow-v2"
 CHECKPOINTS="./results/runs/iTransformer/"
 ITR=1
@@ -73,7 +73,7 @@ python3 -u ./src/experiments/iReflow.py \
     --d_model ${D_MODEL} \
     --d_ff ${D_FF} \
     --batch_size ${BATCH_SIZE} \
-    --learning_rate ${LEARNING_RATE} \
+    --lr ${LEARNING_RATE} \
     --itr ${ITR} \
     --checkpoints ${CHECKPOINTS} \
     --flow_layers ${FLOW_LAYERS} \

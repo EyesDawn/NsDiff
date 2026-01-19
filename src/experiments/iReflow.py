@@ -45,7 +45,7 @@ class iReflowEarlyStopping(EarlyStopping):
         """保存模型检查点"""
         if self.verbose:
             self.trace_func(
-                f"Validation loss decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}). Saving model ..."
+                f"Validation CRPS decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}). Saving model ..."
             )
         torch.save(model.state_dict(), self.path)
         self.val_loss_min = val_loss
@@ -161,6 +161,12 @@ class iReflowExp(ProbForecastExp):
         self.model_configs.class_strategy = self.class_strategy
         self.model_configs.factor = self.factor
         self.model_configs.num_sampling_steps = self.num_sampling_steps
+        # Loss 配置与梯度通路控制
+        self.model_configs.nll_loss_weight = getattr(self, "nll_loss_weight", 1.0)
+        self.model_configs.velocity_loss_weight = getattr(self, "velocity_loss_weight", 1.0)
+        self.model_configs.detach_y_hat_for_velocity = True
+        # 速度分支允许回传到 sigma，有助于概率指标（例如 CRPS）
+        self.model_configs.detach_sigma_for_velocity = (self.is_training != 1)
     
     def _init_model(self):
         """初始化模型"""
@@ -188,7 +194,7 @@ class iReflowExp(ProbForecastExp):
         
         # 学习率调度器
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            self.model_optim, mode='min', factor=0.5, patience=2
+            self.model_optim, mode='min', factor=0.5, patience=1
         )
     
     def _freeze_itransformer(self):
@@ -254,7 +260,9 @@ class iReflowExp(ProbForecastExp):
                 'mean_sigma': [],
                 'min_sigma': [],
                 'max_sigma': [],
-                'mae_point': []
+                'mae_point': [],
+                'gate_mean': [],
+                'gate_var': [],
             }
             
             for i, (
@@ -347,7 +355,7 @@ class iReflowExp(ProbForecastExp):
     def _val(self):
         """验证：使用较少的样本数以加快验证速度"""
         # 设置验证时使用的样本数
-        self._num_samples_for_eval = min(self.num_samples, 20)
+        self._num_samples_for_eval = min(self.num_samples, 30)
         
         # 计算验证损失（用于学习率调度）
         self.model.eval()
@@ -487,12 +495,12 @@ class iReflowExp(ProbForecastExp):
             checkpoint = checkpoint['model']
         
         # 打印 checkpoint 的键名以便调试
-        checkpoint_keys = list(checkpoint.keys())
-        print(f'Checkpoint keys (all {len(checkpoint_keys)} keys): {checkpoint_keys}')
+        # checkpoint_keys = list(checkpoint.keys())
+        # print(f'Checkpoint keys (all {len(checkpoint_keys)} keys): {checkpoint_keys}')
         
         # 检查是否是 iTransformer checkpoint（键名包含 enc_embedding, encoder, projector）
         # 还是 iReflow checkpoint（包含 itransformer, velocity_net 等）
-        checkpoint_keys_str = ' '.join(str(k) for k in checkpoint.keys())
+        # checkpoint_keys_str = ' '.join(str(k) for k in checkpoint.keys())
         is_itransformer_checkpoint = any(
             key.startswith('enc_embedding') or 
             key.startswith('encoder') or 
@@ -755,8 +763,8 @@ class iReflowExp(ProbForecastExp):
             self._run_print(f"run : nss{self.num_sampling_steps}_temp{self.temperature} in seed: {seed}")
 
             parameter_tables, model_parameters_num = count_parameters(self.model)
-            self._run_print(f"parameter_tables: {parameter_tables}")
-            self._run_print(f"model parameters: {model_parameters_num}")
+            # self._run_print(f"parameter_tables: {parameter_tables}")
+            # self._run_print(f"model parameters: {model_parameters_num}")
 
             if self._use_wandb():
                 wandb.run.summary["parameters"] = model_parameters_num
@@ -766,7 +774,7 @@ class iReflowExp(ProbForecastExp):
                 epoch_start_time = time.time()
                 if self.early_stopping.early_stop is True:
                     self._run_print(
-                        f"val loss no decreased for patience={self.patience} epochs,  early stopping ...."
+                        f"val CRPS no decreased for patience={self.patience} epochs,  early stopping ...."
                     )
                     break
 
@@ -789,7 +797,15 @@ class iReflowExp(ProbForecastExp):
                 self.early_stopping(val_result['crps'], self.model)
                 
                 # 学习率调度
+                old_lr = self.model_optim.param_groups[0]['lr']
                 self.scheduler.step(val_result['loss'])
+                current_lr = self.model_optim.param_groups[0]['lr']
+                
+                # 记录学习率变化
+                if old_lr != current_lr:
+                    self._run_print(f"Learning rate updated: {old_lr:.2e} --> {current_lr:.2e}")
+                else:
+                    self._run_print(f"Learning rate: {current_lr:.2e}")
 
                 self._save_run_check_point(seed)
 
@@ -800,6 +816,7 @@ class iReflowExp(ProbForecastExp):
                         wandb.log({f"train_{key}": value}, step=self.current_epoch)
                     wandb.log({f"val_{k}": v for k, v in val_result.items()}, step=self.current_epoch)
                     wandb.log({f"test_{k}": v for k, v in test_result.items()}, step=self.current_epoch)
+                    wandb.log({'learning_rate': current_lr}, step=self.current_epoch)
 
             self._load_best_model()
             best_test_result = self._test()
@@ -854,7 +871,7 @@ class iReflowExp(ProbForecastExp):
             epoch_start_time = time.time()
             if self.early_stopping.early_stop is True:
                 self._run_print(
-                    f"val loss no decreased for patience={self.patience} epochs,  early stopping ...."
+                    f"val CRPS no decreased for patience={self.patience} epochs,  early stopping ...."
                 )
                 break
 
@@ -877,7 +894,15 @@ class iReflowExp(ProbForecastExp):
             self.early_stopping(val_result['crps'], self.model)
             
             # 学习率调度
+            old_lr = self.model_optim.param_groups[0]['lr']
             self.scheduler.step(val_result['loss'])
+            current_lr = self.model_optim.param_groups[0]['lr']
+            
+            # 记录学习率变化
+            if old_lr != current_lr:
+                self._run_print(f"Learning rate updated: {old_lr:.2e} --> {current_lr:.2e}")
+            else:
+                self._run_print(f"Learning rate: {current_lr:.2e}")
 
             self._save_run_check_point(seed)
 
@@ -888,6 +913,7 @@ class iReflowExp(ProbForecastExp):
                     wandb.log({f"train_{key}": value}, step=self.current_epoch)
                 wandb.log({f"val_{k}": v for k, v in val_result.items()}, step=self.current_epoch)
                 wandb.log({f"test_{k}": v for k, v in test_result.items()}, step=self.current_epoch)
+                wandb.log({'learning_rate': current_lr}, step=self.current_epoch)
 
         self._load_best_model()
         best_test_result = self._test()
@@ -939,7 +965,15 @@ class iReflowExp(ProbForecastExp):
             print(f"Val CRPS: {val_result['crps']:.6f}")
             
             # 学习率调度（使用验证损失）
+            old_lr = self.model_optim.param_groups[0]['lr']
             self.scheduler.step(val_result['loss'])
+            current_lr = self.model_optim.param_groups[0]['lr']
+            
+            # 记录学习率变化
+            if old_lr != current_lr:
+                print(f"Learning rate updated: {old_lr:.2e} --> {current_lr:.2e}")
+            else:
+                print(f"Learning rate: {current_lr:.2e}")
             
             # Early Stopping（使用CRPS作为早停指标，与run()方法保持一致）
             self.early_stopping(val_result['crps'], self.model)

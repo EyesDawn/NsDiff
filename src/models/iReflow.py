@@ -56,6 +56,14 @@ class iReflow(nn.Module):
         
         # 采样步数
         self.num_sampling_steps = configs.num_sampling_steps if hasattr(configs, 'num_sampling_steps') else 1
+
+        # Loss 权重（默认不改变现有行为）
+        self.nll_loss_weight = getattr(configs, 'nll_loss_weight', 1.0)
+        self.velocity_loss_weight = getattr(configs, 'velocity_loss_weight', 1.0)
+
+        # 控制 Velocity Loss 是否回传到 y_hat / sigma（默认保持原设计）
+        self.detach_y_hat_for_velocity = getattr(configs, 'detach_y_hat_for_velocity', True)
+        self.detach_sigma_for_velocity = getattr(configs, 'detach_sigma_for_velocity', True)
         
     def get_encoder_features(self, x_enc, x_mark_enc):
         """
@@ -164,7 +172,9 @@ class iReflow(nn.Module):
         # Source State: X_0 ~ N(y_hat, sigma^2)
         # 我们不希望 Velocity Net 的 Loss 去反向修改 y_hat 和 sigma。
         # 如果不 detach，Velocity Net 可能会为了好走直线，去扭曲 y_hat 的位置，导致点预测变差。
-        X_0 = y_hat.detach() + epsilon * sigma.detach()
+        y_hat_flow = y_hat.detach() if self.detach_y_hat_for_velocity else y_hat
+        sigma_flow = sigma.detach() if self.detach_sigma_for_velocity else sigma
+        X_0 = y_hat_flow + epsilon * sigma_flow
         
         # Target State: X_1 = y_gt
         X_1 = y_gt
@@ -180,23 +190,33 @@ class iReflow(nn.Module):
         v_target = X_1 - X_0
         
         # Stage 3: 预测速度场
-        v_pred = self.velocity_net(X_tau, tau.squeeze(), enc_features, y_hat.detach(), sigma.detach())
+        v_pred = self.velocity_net(X_tau, tau.squeeze(), enc_features, y_hat_flow, sigma_flow)
         
         # Stage 4: 计算损失
         # MSE Loss on velocity
         velocity_loss = F.mse_loss(v_pred, v_target)
         
-        total_loss = nll_loss + 1.0 * velocity_loss
+        total_loss = self.nll_loss_weight * nll_loss + self.velocity_loss_weight * velocity_loss
 
         loss_dict = {
             'total_loss': total_loss.item(),
             'velocity_loss': velocity_loss.item(),
             'nll_loss': nll_loss.item(),
+            'nll_loss_weight': self.nll_loss_weight,
+            'velocity_loss_weight': self.velocity_loss_weight,
             'mean_sigma': sigma.mean().item(),
             'min_sigma': sigma.min().item(),
             'max_sigma': sigma.max().item(),
             'mae_point': F.l1_loss(y_hat, y_gt).item()
         }
+
+        # 记录 gate 的均值/方差（来自 VelocityNetwork.confidence_gate）
+        gate_mean = getattr(self.velocity_net, "last_gate_mean", None)
+        gate_var = getattr(self.velocity_net, "last_gate_var", None)
+        if gate_mean is not None:
+            loss_dict["gate_mean"] = float(gate_mean)
+        if gate_var is not None:
+            loss_dict["gate_var"] = float(gate_var)
         
         return total_loss, loss_dict
     

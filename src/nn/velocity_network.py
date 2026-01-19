@@ -179,14 +179,18 @@ class ConfidenceGating(nn.Module):
         """
         # sigma: [B, P, D] -> [B, D, P]
         sigma = sigma.permute(0, 2, 1)
-        
-        # 归一化sigma（相对于batch和variable维度）
-        # 改进：使用相对不确定性，避免sigma尺度问题
-        sigma_mean = sigma.mean(dim=-1, keepdim=True)  # [B, D, 1]
-        sigma_std = sigma.std(dim=-1, keepdim=True) + 1e-6  # [B, D, 1]
-        sigma_norm = (sigma - sigma_mean) / sigma_std  # [B, D, P]
-        # 将归一化的sigma映射到[0, 1]范围
-        sigma_norm = torch.sigmoid(sigma_norm)  # [B, D, P]
+
+        # 稳定性改进：
+        # - 直接对 sigma 做 z-score 在 std 很小时会放大噪声，导致 gate 剧烈抖动（进而训练发散）。
+        # - 这里改为对 log(sigma) 做归一化，并给 std 设置下限，显著降低门控不稳定性。
+        sigma = torch.clamp(sigma, min=1e-6)
+        sigma_feat = torch.log(sigma)  # [B, D, P]
+
+        sigma_mean = sigma_feat.mean(dim=-1, keepdim=True)  # [B, D, 1]
+        sigma_std = sigma_feat.std(dim=-1, keepdim=True)
+        sigma_std = torch.clamp(sigma_std, min=0.1)  # std floor，防止归一化放大
+        sigma_norm = (sigma_feat - sigma_mean) / sigma_std  # [B, D, P]
+        sigma_norm = torch.sigmoid(sigma_norm)  # [B, D, P] -> [0, 1]
         
         # 计算门控系数
         gate = self.sigma_proj(sigma_norm)  # [B, D, d_model]
@@ -194,6 +198,13 @@ class ConfidenceGating(nn.Module):
         # 改进：添加偏移量，确保最小门控系数
         gate = gate + self.gate_bias.to(x.device)
         gate = torch.clamp(gate, min=0.1, max=1.0)  # 限制在[0.1, 1.0]范围内
+
+        # 记录 gate 统计量（用于 wandb / 调试）
+        # 注意：这里不参与反向传播，且做全局统计（跨 B, D, d_model）
+        with torch.no_grad():
+            gate_detached = gate.detach()
+            self.last_gate_mean = gate_detached.mean().item()
+            self.last_gate_var = gate_detached.var(unbiased=False).item()
         
         # 应用门控
         return x * gate
@@ -265,6 +276,9 @@ class VelocityNetwork(nn.Module):
         
         # Step 4: Confidence Gating
         x = self.confidence_gate(x, sigma)
+        # 透传 gate 的统计信息，方便外部读取（如 iReflow 的 loss_dict）
+        self.last_gate_mean = getattr(self.confidence_gate, "last_gate_mean", None)
+        self.last_gate_var = getattr(self.confidence_gate, "last_gate_var", None)
         
         # Step 5: Final Projection
         # [B, D, d_model] -> [B, D, P]

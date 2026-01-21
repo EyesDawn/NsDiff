@@ -30,8 +30,8 @@ DROPOUT=0.1
 IS_TRAINING=1
 BATCH_SIZE=32
 LEARNING_RATE=0.0001
-EPOCHS=10
-PATIENCE=3
+EPOCHS=20
+PATIENCE=5
 
 # Flow配置
 NUM_SAMPLING_STEPS=5
@@ -44,12 +44,12 @@ PRED_LEN=192
 HORIZON=1
 
 # 设备配置
-GPU_ID=2
+GPU_ID=0
 export CUDA_VISIBLE_DEVICES=${GPU_ID}
 DEVICE="cuda:0"
 
 # 实验配置
-SEEDS='[2222,2023]'
+SEEDS='[2222]'
 WANDB_PROJECT="iReflow-v2"
 CHECKPOINTS="./results/runs/iTransformer/"
 ITR=1
@@ -74,7 +74,7 @@ python3 -u ./src/experiments/iReflow.py \
     --d_model ${D_MODEL} \
     --d_ff ${D_FF} \
     --batch_size ${BATCH_SIZE} \
-    --learning_rate ${LEARNING_RATE} \
+    --lr ${LEARNING_RATE} \
     --itr ${ITR} \
     --checkpoints ${CHECKPOINTS} \
     --flow_layers ${FLOW_LAYERS} \

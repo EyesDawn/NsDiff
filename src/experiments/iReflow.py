@@ -194,7 +194,7 @@ class iReflowExp(ProbForecastExp):
         
         # 学习率调度器
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            self.model_optim, mode='min', factor=0.5, patience=1
+            self.model_optim, mode='min', factor=0.5, patience=2
         )
     
     def _freeze_itransformer(self):
@@ -515,9 +515,6 @@ class iReflowExp(ProbForecastExp):
             # 构建 itransformer 的 state_dict（直接使用原始键名，因为 load_state_dict 是直接加载到子模块）
             itransformer_state_dict = {}
             for key, value in checkpoint.items():
-                # 跳过 projector（iReflow 不使用）
-                if key.startswith('projector'):
-                    continue
                 # 跳过非模型参数（如 optimizer, epoch 等）
                 if key in ['optimizer', 'scheduler', 'epoch', 'current_epoch', 'rng_state', 'early_stopping']:
                     continue

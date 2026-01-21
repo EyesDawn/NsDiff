@@ -703,15 +703,6 @@ class iReflowExp(ProbForecastExp):
             # 需要先 setup_run 以初始化必要的路径和配置
             self._setup_run(seed)
             
-            # 初始化数据加载器
-            self._init_data_loader()
-            
-            # 初始化模型
-            self._init_model()
-            
-            # 初始化指标
-            self._init_metrics()
-            
             # 从 checkpoints 加载模型
             self._load_checkpoint_model(setting)
             
@@ -735,23 +726,11 @@ class iReflowExp(ProbForecastExp):
             
             self._setup_run(seed)
             
-            # 初始化数据加载器
-            self._init_data_loader()
-            
-            # 初始化模型（先不冻结，等加载权重后再冻结）
-            self._init_model()
-            
             # 加载 iTransformer 权重
             self._load_itransformer_only(setting)
             
             # 加载权重后再冻结 iTransformer（确保冻结的是预训练权重，而不是随机初始化）
             self._freeze_itransformer()
-            
-            # 初始化指标
-            self._init_metrics()
-            
-            # 设置早停和检查点路径
-            self._setup_early_stopper()
             
             # 检查并恢复运行检查点（需要在模型初始化之后）
             if self._check_run_exist(seed):
@@ -837,18 +816,6 @@ class iReflowExp(ProbForecastExp):
             return {}
         
         self._setup_run(seed)
-        
-        # 初始化数据加载器
-        self._init_data_loader()
-        
-        # 初始化模型（训练整个模型）
-        self._init_model()
-        
-        # 初始化指标
-        self._init_metrics()
-        
-        # 设置早停和检查点路径
-        self._setup_early_stopper()
         
         # 检查并恢复运行检查点（需要在模型初始化之后）
         if self._check_run_exist(seed):

@@ -28,6 +28,8 @@ try:
 except:
     print("Warning: wandb is not installed, some functionality may not work.")
 
+from src.utils.uncertainty_eval import compute_sigma_metrics
+
 
 def dict2namespace(config):
     namespace = argparse.Namespace()
@@ -171,30 +173,32 @@ class iReflowExp(ProbForecastExp):
     def _init_model(self):
         """初始化模型"""
         self.model = iReflow(self.model_configs).to(self.device)
-        
+        # 注意：在 torch_timeseries 的 _setup_run() 中，会在 _init_model() 之后调用 _init_optimizer()
+        # 因此 optimizer / scheduler 必须在 _init_optimizer() 里创建，避免被父类覆盖导致 scheduler 绑定错误的 optimizer。
+
+    def _init_optimizer(self):
+        """初始化优化器与学习率调度器（遵循 torch_timeseries 的 _setup_run 调用顺序）"""
         # 根据 is_training 参数决定训练哪些部分
         # 注意：对于 is_training=1，冻结操作应该在加载预训练权重之后进行
         # 因此这里先不冻结，冻结操作将在 _freeze_itransformer() 中进行
         if self.is_training == 1:
             # 只优化 velocity_net 和 uncertainty_estimator 的参数
-            # iTransformer 的冻结将在加载权重后进行
-            trainable_params = list(self.model.velocity_net.parameters()) + \
-                             list(self.model.uncertainty_estimator.parameters())
-            self.model_optim = torch.optim.Adam(
-                trainable_params, lr=self.lr
+            trainable_params = list(self.model.velocity_net.parameters()) + list(
+                self.model.uncertainty_estimator.parameters()
             )
-            print("Initialized model: will freeze iTransformer after loading weights, only training Velocity Network and Uncertainty Estimator")
+            self.model_optim = torch.optim.Adam(trainable_params, lr=self.lr)
+            print(
+                "Initialized optimizer: will freeze iTransformer after loading weights, only training Velocity Network and Uncertainty Estimator"
+            )
         else:
             # 训练整个模型（is_training=2 或默认情况）
-            self.model_optim = torch.optim.Adam(
-                self.model.parameters(), lr=self.lr
-            )
+            self.model_optim = torch.optim.Adam(self.model.parameters(), lr=self.lr)
             if self.is_training == 2:
-                print("Initialized model: training entire model (iTransformer + Velocity Network)")
-        
-        # 学习率调度器
+                print("Initialized optimizer: training entire model (iTransformer + Velocity Network)")
+
+        # 学习率调度器（必须绑定到最终用于训练的 optimizer）
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            self.model_optim, mode='min', factor=0.5, patience=2
+            self.model_optim, mode="min", factor=0.5, patience=1
         )
     
     def _freeze_itransformer(self):
@@ -351,6 +355,90 @@ class iReflowExp(ProbForecastExp):
         truths = batch_y  # [B, P, D]
         
         return preds, truths
+
+    def _evaluate(self, dataloader):
+        """
+        重写评估逻辑：
+        - 保持父类的采样型概率指标（CRPS/QICE/PICP/...）
+        - 额外评估由 uncertainty_estimator 输出的 sigma 的“校准/锐度”
+
+        注意：sigma/y_hat 是模型输出的同一尺度（通常是数据集 scaler 的缩放后尺度）。
+        为避免依赖 scaler 的内部参数（sigma 需要乘缩放但不平移），这里的 sigma 指标默认在
+        batch_y 的尺度上计算（即 invtrans_loss 为 True 时也不做 inverse_transform）。
+        """
+        self.model.eval()
+        self.metrics.reset()
+
+        # 默认只保留一个关键区间（90%）来评估 coverage + sharpness 的权衡，避免指标过多
+        interval_levels = getattr(self, "sigma_interval_levels", [0.9])
+        pit_bins = int(getattr(self, "pit_bins", 20))
+        # 默认仅记录最关键的一些 sigma 指标；你也可以在配置里覆写 sigma_metric_keys
+        default_sigma_metric_keys = [
+            "gauss_nll",
+            "gauss_crps",
+            "cov_90",
+            "width_90",
+            "pit_ks",
+            "sharpness_sigma_mean",
+        ]
+        sigma_metric_keys = getattr(self, "sigma_metric_keys", default_sigma_metric_keys)
+
+        sigma_sums = {}
+        sigma_counts = 0
+
+        # 获取当前评估时使用的样本数（如果设置了，否则使用全部样本数）
+        num_samples = getattr(self, "_num_samples_for_eval", self.num_samples)
+
+        with tqdm(total=len(dataloader.dataset)) as progress_bar:
+            with torch.no_grad():
+                for batch_x, batch_y, origin_x, origin_y, batch_x_date_enc, batch_y_date_enc in dataloader:
+                    batch_x = batch_x.to(self.device).float()
+                    batch_y = batch_y.to(self.device).float()
+                    origin_y = origin_y.to(self.device).float()
+                    batch_x_date_enc = batch_x_date_enc.to(self.device).float()
+
+                    # 生成采样预测 + 点预测与 sigma
+                    samples, y_hat, sigma = self.model.forecast(
+                        x_enc=batch_x,
+                        x_mark_enc=batch_x_date_enc,
+                        num_samples=num_samples,
+                        temperature=self.temperature,
+                    )  # samples: [B, S, P, D], y_hat/sigma: [B, P, D]
+
+                    # 采样型概率指标：转换为 [B, P, D, S]
+                    preds = samples.permute(0, 2, 3, 1).contiguous()
+                    truths = batch_y
+                    if self.invtrans_loss:
+                        # 采样指标仍按父类逻辑：反归一化后与 origin_y 对齐
+                        preds = self.scaler.inverse_transform(preds)
+                        truths = origin_y
+
+                    self.metrics.update(
+                        preds.contiguous().cpu().detach(),
+                        truths.contiguous().cpu().detach(),
+                    )
+
+                    # sigma 指标：在 batch_y/y_hat/sigma 的同一尺度上计算（不 inverse_transform）
+                    sigma_metrics = compute_sigma_metrics(
+                        y=batch_y.detach().cpu(),
+                        mu=y_hat.detach().cpu(),
+                        sigma=sigma.detach().cpu(),
+                        interval_levels=list(interval_levels),
+                        pit_bins=pit_bins,
+                    )
+                    # 只保留关键指标，避免日志/面板过于拥挤
+                    for k, v in sigma_metrics.items():
+                        if sigma_metric_keys is not None and k not in sigma_metric_keys:
+                            continue
+                        sigma_sums[k] = sigma_sums.get(k, 0.0) + float(v)
+                    sigma_counts += 1
+
+                    progress_bar.update(batch_x.shape[0])
+
+        result = {name: float(metric.compute()) for name, metric in self.metrics.items()}
+        if sigma_counts > 0:
+            result.update({f"sigma_{k}": float(v / sigma_counts) for k, v in sigma_sums.items()})
+        return result
     
     def _val(self):
         """验证：使用较少的样本数以加快验证速度"""
@@ -656,6 +744,26 @@ class iReflowExp(ProbForecastExp):
             
             print('iReflow model loaded successfully')
     
+    def _resume_run(self, seed):
+        """恢复运行检查点（重写父类方法以支持调度器状态恢复）"""
+        run_checkpoint_filepath = os.path.join(self.run_save_dir, f"run_checkpoint.pth")
+        print(f"resuming from {run_checkpoint_filepath}")
+
+        check_point = torch.load(run_checkpoint_filepath, map_location=self.device)
+
+        self.model.load_state_dict(check_point["model"])
+        self.model_optim.load_state_dict(check_point["optimizer"])
+        self.current_epoch = check_point["current_epoch"]
+        
+        # 恢复调度器状态（如果存在）
+        if "scheduler" in check_point:
+            self.scheduler.load_state_dict(check_point["scheduler"])
+            print("Scheduler state restored from checkpoint")
+        else:
+            print("Warning: Scheduler state not found in checkpoint, using default state")
+
+        self.early_stopping.set_state(check_point["early_stopping"])
+    
     def _load_best_model(self):
         """加载最佳模型（从 run_save_dir）"""
         # 使用 weights_only=True 因为 best_model.pth 只包含模型权重（state_dict）
@@ -673,6 +781,7 @@ class iReflowExp(ProbForecastExp):
             "model": self.model.state_dict(),
             "current_epoch": self.current_epoch,
             "optimizer": self.model_optim.state_dict(),
+            "scheduler": self.scheduler.state_dict(),
             "rng_state": torch.get_rng_state(),
             "early_stopping": self.early_stopping.get_state(),
         }
@@ -726,15 +835,17 @@ class iReflowExp(ProbForecastExp):
             
             self._setup_run(seed)
             
-            # 加载 iTransformer 权重
-            self._load_itransformer_only(setting)
-            
-            # 加载权重后再冻结 iTransformer（确保冻结的是预训练权重，而不是随机初始化）
-            self._freeze_itransformer()
-            
             # 检查并恢复运行检查点（需要在模型初始化之后）
             if self._check_run_exist(seed):
+                # 如果检查点存在，直接恢复（包含整个模型状态，包括 iTransformer 和 velocity network）
                 self._resume_run(seed)
+                # 恢复后需要重新冻结 iTransformer（因为 load_state_dict 不会保持 requires_grad=False）
+                self._freeze_itransformer()
+            else:
+                # 如果检查点不存在，加载预训练的 iTransformer 权重
+                self._load_itransformer_only(setting)
+                # 加载权重后再冻结 iTransformer（确保冻结的是预训练权重，而不是随机初始化）
+                self._freeze_itransformer()
 
             self._run_print(f"run : nss{self.num_sampling_steps}_temp{self.temperature} in seed: {seed}")
 

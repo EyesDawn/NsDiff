@@ -96,6 +96,7 @@ class iReflowExp(ProbForecastExp):
     epochs: int = 100
     batch_size: int = 32
     patience: int = 10
+    lr_patience: int = 1  # 学习率调度器的patience
     
     # Flow配置
     num_sampling_steps: int = 1  # ODE求解步数，1表示one-step generation
@@ -198,7 +199,7 @@ class iReflowExp(ProbForecastExp):
 
         # 学习率调度器（必须绑定到最终用于训练的 optimizer）
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            self.model_optim, mode="min", factor=0.5, patience=1
+            self.model_optim, mode="min", factor=0.5, patience=self.lr_patience
         )
     
     def _freeze_itransformer(self):

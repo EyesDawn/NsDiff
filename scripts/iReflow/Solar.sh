@@ -32,6 +32,7 @@ BATCH_SIZE=32
 LEARNING_RATE=0.0005
 EPOCHS=20
 PATIENCE=6
+LR_PATIENCE=1
 
 # Flow配置
 NUM_SAMPLING_STEPS=5
@@ -81,6 +82,7 @@ python3 -u ./src/experiments/iReflow.py \
     --dropout ${DROPOUT} \
     --epochs ${EPOCHS} \
     --patience ${PATIENCE} \
+    --lr_patience ${LR_PATIENCE} \
     --num_sampling_steps ${NUM_SAMPLING_STEPS} \
     --temperature ${TEMPERATURE} \
     --num_samples ${NUM_SAMPLES} \

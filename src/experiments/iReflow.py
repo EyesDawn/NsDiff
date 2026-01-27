@@ -89,6 +89,7 @@ class iReflowExp(ProbForecastExp):
     use_norm: bool = True
     class_strategy: str = 'projection'
     factor: int = 1
+    use_relative_space: bool = True
     
     # 训练配置
     is_training: int = 1
@@ -170,6 +171,7 @@ class iReflowExp(ProbForecastExp):
         self.model_configs.detach_y_hat_for_velocity = True
         # 速度分支允许回传到 sigma，有助于概率指标（例如 CRPS）
         self.model_configs.detach_sigma_for_velocity = (self.is_training != 1)
+        self.model_configs.use_relative_space = self.use_relative_space
     
     def _init_model(self):
         """初始化模型"""

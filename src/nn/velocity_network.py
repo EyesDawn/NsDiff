@@ -221,10 +221,11 @@ class VelocityNetwork(nn.Module):
     输入：噪声状态X_τ、时间τ、条件(H, y_hat, sigma)
     输出：速度场 v
     """
-    def __init__(self, pred_len, d_model=512, n_heads=8, e_layers=3, d_ff=2048, dropout=0.1):
+    def __init__(self, pred_len, d_model=512, n_heads=8, e_layers=3, d_ff=2048, dropout=0.1, use_relative_space=True):
         super(VelocityNetwork, self).__init__()
         self.pred_len = pred_len
         self.d_model = d_model
+        self.use_relative_space = use_relative_space
         
         # Step 1: Inverted Embedding - 将时间序列嵌入为变量tokens
         # X_τ: [B, P, D] -> [B, D, P] -> [B, D, d_model]
@@ -239,9 +240,6 @@ class VelocityNetwork(nn.Module):
             VariateCrossAttentionLayer(d_model, n_heads, d_ff, dropout)
             for _ in range(e_layers)
         ])
-        
-        # Step 4: Confidence Gating
-        self.confidence_gate = ConfidenceGating(pred_len, d_model)
         
         # Step 5: Final Projection
         # [B, D, d_model] -> [B, D, P] -> [B, P, D]
@@ -261,11 +259,18 @@ class VelocityNetwork(nn.Module):
         Returns:
             v: [B, P, D] 速度场
         """
-        B, P, D = x_tau.shape
         
+        # Step 0: 坐标变换到相对空间 (可选，通过配置控制)
+        if self.use_relative_space:
+            # sigma_safe = torch.clamp(sigma, min=0.01)  # 数值稳定性
+            z_tau = (x_tau - y_hat) / sigma
+            # z_tau = torch.clamp(z_tau, -10, 10)  # 防止极端值
+        else:
+            z_tau = x_tau
+
         # Step 1: Inverted Embedding
         # [B, P, D] -> [B, D, P]
-        x = x_tau.permute(0, 2, 1)
+        x = z_tau.permute(0, 2, 1)
         # [B, D, P] -> [B, D, d_model]
         x = self.value_embedding(x)
         x = self.dropout_emb(x)
@@ -279,17 +284,17 @@ class VelocityNetwork(nn.Module):
         
         x = self.norm(x)
         
-        # Step 4: Confidence Gating
-        x = self.confidence_gate(x, sigma)
-        # 透传 gate 的统计信息，方便外部读取（如 iReflow 的 loss_dict）
-        self.last_gate_mean = getattr(self.confidence_gate, "last_gate_mean", None)
-        self.last_gate_var = getattr(self.confidence_gate, "last_gate_var", None)
-        
-        # Step 5: Final Projection
+        # Step 4: Final Projection
         # [B, D, d_model] -> [B, D, P]
         v = self.projector(x)
         # [B, D, P] -> [B, P, D]
-        v = v.permute(0, 2, 1)
-        
+        u = v.permute(0, 2, 1)
+
+        # Step 5: 逆变换回绝对空间
+        if self.use_relative_space:
+            v = sigma * u
+        else:
+            v = u
+
         return v
 

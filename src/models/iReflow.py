@@ -51,7 +51,8 @@ class iReflow(nn.Module):
             n_heads=configs.n_heads,
             e_layers=configs.flow_layers if hasattr(configs, 'flow_layers') else 3,
             d_ff=configs.d_ff,
-            dropout=configs.dropout
+            dropout=configs.dropout,
+            use_relative_space=configs.use_relative_space
         )
         
         # 采样步数

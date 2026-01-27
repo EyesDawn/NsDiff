@@ -25,13 +25,15 @@ E_LAYERS=3
 FLOW_LAYERS=3
 D_FF=512
 DROPOUT=0.1
+USE_RELATIVE_SPACE=True
 
 # 训练配置
 IS_TRAINING=1
 BATCH_SIZE=16
 LEARNING_RATE=0.0005
-EPOCHS=10
-PATIENCE=3
+EPOCHS=20
+PATIENCE=6
+LR_PATIENCE=2
 
 # Flow配置
 NUM_SAMPLING_STEPS=1
@@ -44,11 +46,11 @@ PRED_LEN=192
 HORIZON=1
 
 # 设备配置
-GPU_ID=1
+GPU_ID=0
 export CUDA_VISIBLE_DEVICES=${GPU_ID}
 DEVICE="cuda:0"
 
-SEEDS='[2222,2023]'
+SEEDS='[2222]'
 WANDB_PROJECT="iReflow-v2"
 CHECKPOINTS="./results/runs/iTransformer/"
 ITR=1
@@ -73,7 +75,7 @@ python3 -u ./src/experiments/iReflow.py \
     --d_model ${D_MODEL} \
     --d_ff ${D_FF} \
     --batch_size ${BATCH_SIZE} \
-    --learning_rate ${LEARNING_RATE} \
+    --lr ${LEARNING_RATE} \
     --itr ${ITR} \
     --checkpoints ${CHECKPOINTS} \
     --flow_layers ${FLOW_LAYERS} \
@@ -81,10 +83,12 @@ python3 -u ./src/experiments/iReflow.py \
     --dropout ${DROPOUT} \
     --epochs ${EPOCHS} \
     --patience ${PATIENCE} \
+    --lr_patience ${LR_PATIENCE} \
     --num_sampling_steps ${NUM_SAMPLING_STEPS} \
     --temperature ${TEMPERATURE} \
     --num_samples ${NUM_SAMPLES} \
     --device ${DEVICE} \
+    --use_relative_space ${USE_RELATIVE_SPACE} \
     runs --seeds="${SEEDS}"
 
 echo "iReflow-Electricity experiment completed!"

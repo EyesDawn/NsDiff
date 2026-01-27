@@ -25,13 +25,15 @@ E_LAYERS=2
 FLOW_LAYERS=3
 D_FF=512
 DROPOUT=0.1
+USE_RELATIVE_SPACE=True
 
 # 训练配置
 IS_TRAINING=1
 BATCH_SIZE=32
 LEARNING_RATE=0.0005
-EPOCHS=10
-PATIENCE=3
+EPOCHS=20
+PATIENCE=6
+LR_PATIENCE=1
 
 # Flow配置
 NUM_SAMPLING_STEPS=5
@@ -48,8 +50,8 @@ GPU_ID=0
 export CUDA_VISIBLE_DEVICES=${GPU_ID}
 DEVICE="cuda:0"
 
-SEEDS='[2224]'
-WANDB_PROJECT="iReflow-v2"
+SEEDS='[2223]'
+WANDB_PROJECT="iReflow-v3"
 CHECKPOINTS="./results/runs/iTransformer/"
 ITR=1
 
@@ -81,10 +83,12 @@ python3 -u ./src/experiments/iReflow.py \
     --dropout ${DROPOUT} \
     --epochs ${EPOCHS} \
     --patience ${PATIENCE} \
+    --lr_patience ${LR_PATIENCE} \
     --num_sampling_steps ${NUM_SAMPLING_STEPS} \
     --temperature ${TEMPERATURE} \
     --num_samples ${NUM_SAMPLES} \
     --device ${DEVICE} \
+    --use_relative_space ${USE_RELATIVE_SPACE} \
     runs --seeds="${SEEDS}"
 
 echo "iReflow-Solar experiment completed!"

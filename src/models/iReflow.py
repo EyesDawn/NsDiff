@@ -31,7 +31,7 @@ class iReflow(nn.Module):
         self.uncertainty_estimator = nn.Sequential(
             nn.Linear(configs.d_model, configs.d_model // 2),
             nn.ReLU(),
-            nn.Dropout(configs.dropout if hasattr(configs, 'dropout') else 0.1),
+            # nn.Dropout(configs.dropout if hasattr(configs, 'dropout') else 0.1),
             nn.Linear(configs.d_model // 2, configs.pred_len),
             nn.Softplus()  # 确保sigma > 0
         )
@@ -51,7 +51,8 @@ class iReflow(nn.Module):
             n_heads=configs.n_heads,
             e_layers=configs.flow_layers if hasattr(configs, 'flow_layers') else 3,
             d_ff=configs.d_ff,
-            dropout=configs.dropout
+            dropout=configs.dropout,
+            use_relative_space=configs.use_relative_space
         )
         
         # 采样步数

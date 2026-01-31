@@ -169,8 +169,7 @@ class iReflowExp(ProbForecastExp):
         self.model_configs.nll_loss_weight = getattr(self, "nll_loss_weight", 1.0)
         self.model_configs.velocity_loss_weight = getattr(self, "velocity_loss_weight", 1.0)
         self.model_configs.detach_y_hat_for_velocity = True
-        # 速度分支允许回传到 sigma，有助于概率指标（例如 CRPS）
-        self.model_configs.detach_sigma_for_velocity = (self.is_training != 1)
+        self.model_configs.detach_sigma_for_velocity = True
         self.model_configs.use_relative_space = self.use_relative_space
     
     def _init_model(self):
@@ -183,21 +182,22 @@ class iReflowExp(ProbForecastExp):
         """初始化优化器与学习率调度器（遵循 torch_timeseries 的 _setup_run 调用顺序）"""
         # 根据 is_training 参数决定训练哪些部分
         # 注意：对于 is_training=1，冻结操作应该在加载预训练权重之后进行
-        # 因此这里先不冻结，冻结操作将在 _freeze_itransformer() 中进行
+        # 因此这里先不冻结，冻结操作将在 _freeze_itransformer() 和 _freeze_uncertainty_estimator() 中进行
         if self.is_training == 1:
-            # 只优化 velocity_net 和 uncertainty_estimator 的参数
-            trainable_params = list(self.model.velocity_net.parameters()) + list(
-                self.model.uncertainty_estimator.parameters()
-            )
+            # Stage 3: 只优化 velocity_net 的参数
+            # iTransformer 和 uncertainty_estimator 将从预训练权重加载并冻结
+            trainable_params = list(self.model.velocity_net.parameters())
             self.model_optim = torch.optim.Adam(trainable_params, lr=self.lr)
             print(
-                "Initialized optimizer: will freeze iTransformer after loading weights, only training Velocity Network and Uncertainty Estimator"
+                "Initialized optimizer for Stage 3: "
+                "will freeze iTransformer and Uncertainty Estimator after loading weights, "
+                "only training Velocity Network"
             )
         else:
             # 训练整个模型（is_training=2 或默认情况）
             self.model_optim = torch.optim.Adam(self.model.parameters(), lr=self.lr)
             if self.is_training == 2:
-                print("Initialized optimizer: training entire model (iTransformer + Velocity Network)")
+                print("Initialized optimizer: training entire model (iTransformer + Uncertainty Estimator + Velocity Network)")
 
         # 学习率调度器（必须绑定到最终用于训练的 optimizer）
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -214,6 +214,13 @@ class iReflowExp(ProbForecastExp):
         # 打印模型参数
         # num_params = count_parameters(self.model)
         # print(f"Model initialized with {num_params} parameters")
+    
+    def _freeze_uncertainty_estimator(self):
+        """冻结 Uncertainty Estimator 参数（在加载预训练权重后调用）"""
+        if self.is_training == 1:
+            for param in self.model.uncertainty_estimator.parameters():
+                param.requires_grad = False
+            print("Uncertainty Estimator parameters frozen after loading pretrained weights")
     
     def _setup_early_stopper(self):
         """设置早停和检查点路径"""
@@ -562,9 +569,65 @@ class iReflowExp(ProbForecastExp):
         )
         return setting
     
+    def _load_uncertainty_estimator(self, setting):
+        """
+        加载预训练的 Uncertainty Estimator 权重（用于 Stage 3: is_training=1 模式）
+        
+        路径规则：从 Stage 2 的 run_save_dir 加载 best_model.pth
+        格式：{save_dir}/runs/{model_type}/{dataset_type}/{setting}/seed_{seed}/best_model.pth
+        
+        Args:
+            setting: 实验设置字符串
+        """
+        # 构建 Stage 2 的 checkpoint 路径
+        # 注意：这里假设 Stage 2 使用了相同的 setting 和 seed
+        # 路径格式：./results/runs/estimator/{dataset}/{setting}/seed_{seed}/best_model.pth
+        dataset = getattr(self, "dataset_type", getattr(self, "data", "custom"))
+        seed = getattr(self, "current_seed", 42)
+        stage2_run_dir = os.path.join(
+            "./results", "runs", "estimator", dataset, setting, f"seed_{seed}"
+        )
+        best_model_path = os.path.join(stage2_run_dir, 'best_model.pth')
+        
+        if not os.path.exists(best_model_path):
+            raise FileNotFoundError(
+                f"Stage 2 checkpoint not found at {best_model_path}. "
+                f"Please ensure the Uncertainty Estimator has been pretrained using "
+                f"pretrain_uncertainty_estimator.py first."
+            )
+        
+        print(f'Loading pretrained Uncertainty Estimator from {best_model_path}')
+        checkpoint = torch.load(best_model_path, map_location=self.device, weights_only=True)
+        
+        # 提取 uncertainty_estimator 的权重
+        uncertainty_state_dict = {}
+        for key, value in checkpoint.items():
+            if key.startswith('uncertainty_estimator.'):
+                # 移除 'uncertainty_estimator.' 前缀
+                new_key = key[len('uncertainty_estimator.'):]
+                uncertainty_state_dict[new_key] = value
+        
+        if not uncertainty_state_dict:
+            raise ValueError(
+                f"Could not find uncertainty_estimator weights in checkpoint. "
+                f"Available keys: {list(checkpoint.keys())[:10]}..."
+            )
+        
+        # 加载权重
+        missing_keys, unexpected_keys = self.model.uncertainty_estimator.load_state_dict(
+            uncertainty_state_dict, strict=True
+        )
+        
+        if missing_keys:
+            print(f'Warning: Missing keys in uncertainty_estimator: {missing_keys}')
+        if unexpected_keys:
+            print(f'Warning: Unexpected keys: {unexpected_keys}')
+        
+        print('Uncertainty Estimator weights loaded successfully from Stage 2 checkpoint.')
+    
     def _load_itransformer_only(self, setting):
         """
-        只加载 iTransformer 的权重（用于 is_training=1 模式）
+        只加载 iTransformer 的权重（用于 Stage 2 和 Stage 3）
         路径规则：os.path.join(self.checkpoints, setting) + '/checkpoint.pth'
         """
         path = os.path.join(self.checkpoints, setting)
@@ -798,9 +861,15 @@ class iReflowExp(ProbForecastExp):
         
         训练模式说明：
         - is_training=0: 不训练任何模型，只加载已保存的权重并进行测试评估
-        - is_training=1: 只训练Velocity Network，加载iTransformer模型的权重，最后进行测试评估
-        - is_training=2: 训练整个模型(iTransformer+VelocityNetwork)
+        - is_training=1: Stage 3 - 只训练 Velocity Network
+                        需要加载 Stage 1 预训练的 iTransformer 和 Stage 2 预训练的 Uncertainty Estimator
+                        最后进行测试评估
+        - is_training=2: 端到端训练整个模型 (iTransformer + Uncertainty Estimator + Velocity Network)
+        
+        注意：Stage 2 (Uncertainty Estimator 预训练) 请使用 pretrain_uncertainty_estimator.py
         """
+        # 记录当前 seed，便于在加载 Stage 2 权重等场景中复用
+        self.current_seed = seed
         # 生成 setting 字符串（用于 checkpoints 路径）
         setting = self._get_setting(seed)
         
@@ -829,9 +898,9 @@ class iReflowExp(ProbForecastExp):
             
             return test_result
         
-        # 模式 1: 只训练 Velocity Network（加载 iTransformer 权重）
+        # 模式 1: Stage 3 - 只训练 Velocity Network（加载 iTransformer 和 Uncertainty Estimator 权重）
         if self.is_training == 1:
-            print('>>>>>>>training Velocity Network only (iTransformer frozen) : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
+            print('>>>>>>>Stage 3: training Velocity Network only (iTransformer + Uncertainty Estimator frozen) : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
             
             if self._use_wandb() and not self._init_wandb(self.project, seed): 
                 return {}
@@ -840,15 +909,22 @@ class iReflowExp(ProbForecastExp):
             
             # 检查并恢复运行检查点（需要在模型初始化之后）
             if self._check_run_exist(seed):
-                # 如果检查点存在，直接恢复（包含整个模型状态，包括 iTransformer 和 velocity network）
+                # 如果检查点存在，直接恢复（包含整个模型状态）
                 self._resume_run(seed)
-                # 恢复后需要重新冻结 iTransformer（因为 load_state_dict 不会保持 requires_grad=False）
+                # 恢复后需要重新冻结 iTransformer 和 uncertainty_estimator
+                # （因为 load_state_dict 不会保持 requires_grad=False）
                 self._freeze_itransformer()
+                self._freeze_uncertainty_estimator()
             else:
-                # 如果检查点不存在，加载预训练的 iTransformer 权重
+                # 如果检查点不存在，加载预训练的权重
+                # Stage 3 需要加载：
+                # 1. Stage 1 预训练的 iTransformer
+                # 2. Stage 2 预训练的 Uncertainty Estimator
                 self._load_itransformer_only(setting)
-                # 加载权重后再冻结 iTransformer（确保冻结的是预训练权重，而不是随机初始化）
+                self._load_uncertainty_estimator(setting)
+                # 加载权重后冻结它们（确保冻结的是预训练权重，而不是随机初始化）
                 self._freeze_itransformer()
+                self._freeze_uncertainty_estimator()
 
             self._run_print(f"run : nss{self.num_sampling_steps}_temp{self.temperature} in seed: {seed}")
 
@@ -879,7 +955,7 @@ class iReflowExp(ProbForecastExp):
                 self._run_print(f"Training loss : {train_loss}")
 
                 val_result = self._val()
-                test_result = self._test()
+                # test_result = self._test()
 
                 self.current_epoch = self.current_epoch + 1
                 
@@ -905,7 +981,7 @@ class iReflowExp(ProbForecastExp):
                     for key, value in train_metrics.items():
                         wandb.log({f"train_{key}": value}, step=self.current_epoch)
                     wandb.log({f"val_{k}": v for k, v in val_result.items()}, step=self.current_epoch)
-                    wandb.log({f"test_{k}": v for k, v in test_result.items()}, step=self.current_epoch)
+                    # wandb.log({f"test_{k}": v for k, v in test_result.items()}, step=self.current_epoch)
                     wandb.log({'learning_rate': current_lr}, step=self.current_epoch)
 
             self._load_best_model()

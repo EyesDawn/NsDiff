@@ -418,7 +418,7 @@ class ProbForecastExp(ForecastExp):
             self._run_print(f"Traininng loss : {np.mean(train_losses)}")
 
             val_result = self._val()
-            test_result = self._test()
+            # test_result = self._test()
 
             self.current_epoch = self.current_epoch + 1
             self.early_stopper(val_result['crps'], model=self.model)
@@ -428,7 +428,7 @@ class ProbForecastExp(ForecastExp):
             if self._use_wandb():
                 wandb.log({'training_loss' : np.mean(train_losses)}, step=self.current_epoch)
                 wandb.log( {f"val_{k}": v for k, v in val_result.items()}, step=self.current_epoch)
-                wandb.log( {f"test_{k}": v for k, v in test_result.items()}, step=self.current_epoch)
+                # wandb.log( {f"test_{k}": v for k, v in test_result.items()}, step=self.current_epoch)
 
             # self.scheduler.step()
 

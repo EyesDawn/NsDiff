@@ -87,6 +87,7 @@ class iReflow(nn.Module):
             x_enc_norm = x_enc - means
             stdev = torch.sqrt(torch.var(x_enc_norm, dim=1, keepdim=True, unbiased=False) + 1e-5)
             x_enc_norm = x_enc_norm / stdev
+            stdev = stdev.detach()
         else:
             x_enc_norm = x_enc
             means = None

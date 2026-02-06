@@ -168,8 +168,6 @@ class iReflowExp(ProbForecastExp):
         # Loss 配置与梯度通路控制
         self.model_configs.nll_loss_weight = getattr(self, "nll_loss_weight", 1.0)
         self.model_configs.velocity_loss_weight = getattr(self, "velocity_loss_weight", 1.0)
-        self.model_configs.detach_y_hat_for_velocity = True
-        self.model_configs.detach_sigma_for_velocity = True
         self.model_configs.use_relative_space = self.use_relative_space
     
     def _init_model(self):

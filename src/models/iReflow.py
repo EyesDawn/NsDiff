@@ -62,9 +62,6 @@ class iReflow(nn.Module):
         self.nll_loss_weight = getattr(configs, 'nll_loss_weight', 1.0)
         self.velocity_loss_weight = getattr(configs, 'velocity_loss_weight', 1.0)
 
-        # 控制 Velocity Loss 是否回传到 y_hat / sigma（默认保持原设计）
-        self.detach_y_hat_for_velocity = getattr(configs, 'detach_y_hat_for_velocity', True)
-        self.detach_sigma_for_velocity = getattr(configs, 'detach_sigma_for_velocity', True)
         
     def get_encoder_features(self, x_enc, x_mark_enc):
         """
@@ -162,9 +159,9 @@ class iReflow(nn.Module):
         
         # Gaussian NLL Loss (防止 Sigma 坍缩为0)
         # 为了数值稳定，防止除以0
-        var = sigma ** 2
-        nll_loss = 0.5 * torch.log(var + 1e-6) + 0.5 * (y_gt - y_hat)**2 / (var + 1e-6)
-        nll_loss = nll_loss.mean()
+        # var = sigma ** 2
+        # nll_loss = 0.5 * torch.log(var + 1e-6) + 0.5 * (y_gt - y_hat)**2 / (var + 1e-6)
+        # nll_loss = nll_loss.mean()
 
         # Stage 2: 构建Rectified Flow
         
@@ -174,8 +171,8 @@ class iReflow(nn.Module):
         # Source State: X_0 ~ N(y_hat, sigma^2)
         # 我们不希望 Velocity Net 的 Loss 去反向修改 y_hat 和 sigma。
         # 如果不 detach，Velocity Net 可能会为了好走直线，去扭曲 y_hat 的位置，导致点预测变差。
-        y_hat_flow = y_hat.detach() if self.detach_y_hat_for_velocity else y_hat
-        sigma_flow = sigma.detach() if self.detach_sigma_for_velocity else sigma
+        y_hat_flow = y_hat.detach()
+        sigma_flow = sigma.detach()
         X_0 = y_hat_flow + epsilon * sigma_flow
         
         # Target State: X_1 = y_gt
@@ -198,14 +195,15 @@ class iReflow(nn.Module):
         # MSE Loss on velocity
         velocity_loss = F.mse_loss(v_pred, v_target)
         
-        total_loss = self.nll_loss_weight * nll_loss + self.velocity_loss_weight * velocity_loss
+        # total_loss = self.nll_loss_weight * nll_loss + self.velocity_loss_weight * velocity_loss
+        total_loss = velocity_loss
 
         loss_dict = {
             'total_loss': total_loss.item(),
             'velocity_loss': velocity_loss.item(),
-            'nll_loss': nll_loss.item(),
-            'nll_loss_weight': self.nll_loss_weight,
-            'velocity_loss_weight': self.velocity_loss_weight,
+            # 'nll_loss': nll_loss.item(),
+            # 'nll_loss_weight': self.nll_loss_weight,
+            # 'velocity_loss_weight': self.velocity_loss_weight,
             'mean_sigma': sigma.mean().item(),
             'min_sigma': sigma.min().item(),
             'max_sigma': sigma.max().item(),

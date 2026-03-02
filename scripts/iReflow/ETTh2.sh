@@ -1,18 +1,18 @@
 #!/bin/bash
 
-# iReflow运行脚本 - ETTm2数据集
+# iReflow运行脚本 - ETTh1数据集
 # 使用Rectified Flow进行概率时间序列预测
 
 export PYTHONPATH=./
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 
 # 数据集配置
-DATASET="ETTm2"
-DATA_PATH="ETTm2/ETTm2.csv"
+DATASET="ETTh2"
+DATA_PATH="ETTh2/ETTh2.csv"
 ROOT_PATH="./data/"
 
 # 模型配置
-MODEL_ID="ETTm2_96_192"
+MODEL_ID="ETTh2_96_192"
 MODEL_NAME="iReflow"
 D_FEATURES="M"
 ENC_IN=7

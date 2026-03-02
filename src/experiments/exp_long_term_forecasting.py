@@ -1,5 +1,5 @@
 from src.experiments.exp_point_basic import Exp_Point_Basic
-from src.utils.tools import EarlyStopping, adjust_learning_rate, visual
+from src.utils.tools import EarlyStopping, adjust_learning_rate
 from src.utils.metrics import metric
 import torch
 import torch.nn as nn

@@ -1085,7 +1085,7 @@ class iReflowExp(ProbForecastExp):
         
         # 初始化数据加载器
         print("\nInitializing data loaders...")
-        self._init_data_loader()
+        self._init_data_loader(fast_test=False, fast_val = False)
         
         # 初始化模型
         print("Initializing model...")

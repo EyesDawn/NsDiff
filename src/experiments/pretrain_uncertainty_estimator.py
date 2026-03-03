@@ -16,6 +16,7 @@ from tqdm import tqdm
 from src.experiments.iReflow import iReflowExp, iReflowEarlyStopping
 from torch_timeseries.utils.model_stats import count_parameters
 from torch_timeseries.utils.reproduce import reproducible
+from src.utils.revin import RevIN
 
 try:
     import wandb
@@ -379,6 +380,202 @@ class UncertaintyEstimatorPretrainExp(iReflowExp):
         print('=' * 80)
         
         return best_test_result
+
+    @torch.no_grad()
+    def extract_residuals_on_test(
+        self,
+        seed: int = 42,
+        save_path: str = "./results/analysis/electricity_residuals_fast.npz",
+        use_origin_scale: bool = False,
+        eps: float = 1e-6,
+        return_result: bool = False,
+    ) -> Dict[str, np.ndarray] | None:
+        """
+        在指定配置和 seed 下，对 Test Set 进行一次前向推理，提取：
+            - Y: 真实未来序列，shape [N, P, D]
+            - RevIN 统计量: mu_X, sigma_X，shape [N, 1, D]
+            - iReflow 预测统计量: mu_Y_hat, sigma_Y_hat，shape [N, 1, D]（对预测时间步求均值）
+            - 残差空间变量:
+                  Z_RevIN = (Y - mu_X) / sigma_X
+                  Z_PDN   = (Y - mu_Y_hat) / sigma_Y_hat
+
+        Args:
+            seed: 与训练时一致的随机种子，用于定位同一个 setting 与 checkpoint。
+            save_path: 保存 .npz 文件的路径。
+            use_origin_scale: 若为 True，则在原始尺度上计算 Y 和 RevIN 统计量；
+                              否则在标准化后的尺度（dataloader 输出的 batch_x/batch_y）上计算。
+            eps: 数值稳定性用的小常数，防止除零。
+
+        Returns:
+            若 return_result=True，则返回一个包含上述所有张量（转为 numpy）的字典；
+            否则返回 None（适合命令行调用，避免在终端打印巨大数组）。
+        """
+        # 1. 生成 setting，并初始化运行环境与 dataloader / 模型
+        setting = self._get_setting(seed)
+
+        print("=" * 80)
+        print("Stage 2 Analysis: Extract residuals on Test Set")
+        print(f"Dataset: {getattr(self, 'dataset_type', getattr(self, 'data', 'custom'))}")
+        print(f"Setting: {setting}")
+        print(f"Seed   : {seed}")
+        print("=" * 80)
+
+        # 不做训练，只做一次完整的 _setup_run，复用 ProbForecastExp 的数据管线
+        self._setup_run(seed)
+        # 对于分析实验，希望在 Test Set 上遍历全部样本，因此强制关闭 fast_test
+        # 重新初始化 dataloader（仅影响当前实例，不改变训练阶段默认行为）
+        try:
+            self._init_data_loader(shuffle=False, fast_test=False, fast_val=False)
+        except TypeError:
+            # 兼容万一父类签名不同的情况，退回默认调用
+            self._init_data_loader()
+        # 将 run_save_dir / best_checkpoint_filepath 重定向到 Stage 2 的 estimator 目录
+        self._setup_estimator_run_paths(setting, seed)
+
+        # 加载 Stage 2 训练得到的 best_model.pth（只包含模型 state_dict）
+        self._load_best_model()
+        self.model.eval()
+
+        device = self.device
+
+        # 2. RevIN 用于统计历史序列的 μ_X, σ_X（不干预模型输入，只做统计）
+        #    这里使用特征维度 = dataset.num_features（即最后一个维度）
+        num_features = getattr(self, "enc_in", None)
+        if num_features is None and hasattr(self, "dataset"):
+            num_features = getattr(self.dataset, "num_features", None)
+        if num_features is None:
+            raise ValueError(
+                "无法确定时间序列特征维度 num_features，请确保 enc_in 或 dataset.num_features 可用。"
+            )
+        revin = RevIN(num_features=num_features, affine=False).to(device)
+
+        # 收集容器
+        Ys = []
+        mu_Xs = []
+        sigma_Xs = []
+        mu_Y_hats = []
+        sigma_Y_hats = []
+        Z_RevINs = []
+        Z_PDNs = []
+
+        # 3. 遍历 Test Set，逐批收集统计量与残差
+        with tqdm(total=len(self.test_loader.dataset)) as progress_bar:
+            for (
+                batch_x,
+                batch_y,
+                origin_x,
+                origin_y,
+                batch_x_date_enc,
+                batch_y_date_enc,
+            ) in self.test_loader:
+                # dataloader 输出均为 [B, L, D] / [B, P, D] 形式
+                batch_x = batch_x.to(device).float()
+                batch_y = batch_y.to(device).float()
+                origin_x = origin_x.to(device).float()
+                origin_y = origin_y.to(device).float()
+                batch_x_date_enc = batch_x_date_enc.to(device).float()
+
+                # 选择用于统计 RevIN 的尺度
+                if use_origin_scale:
+                    X_for_stats = origin_x
+                    Y = origin_y
+                else:
+                    X_for_stats = batch_x
+                    Y = batch_y
+
+                # 3.1 RevIN 统计量 μ_X, σ_X （形状 [B, 1, D]）
+                _ = revin(X_for_stats, mode="norm")
+                mu_X = revin.mean  # [B, 1, D]
+                sigma_X = revin.stdev  # [B, 1, D]
+
+                # 3.2 iReflow 的点预测 y_hat 和不确定性 sigma （初始为 [B, P, D]）
+                enc_features, y_hat, sigma = self.model.get_encoder_features(
+                    batch_x, batch_x_date_enc
+                )
+
+                # 若在原始尺度上分析，则需要把 y_hat / sigma 从标准化尺度恢复到原始尺度
+                # 这里复用 scaler.inverse_transform，仅对时间维度做逐步还原
+                if use_origin_scale and hasattr(self, "scaler"):
+                    # scaler 接受 [..., D] 形状，这里合并 batch 与 step 维度再还原
+                    B, P, D = y_hat.shape
+                    y_hat_flat = y_hat.reshape(B * P, D)
+                    y_hat_orig = self.scaler.inverse_transform(y_hat_flat).reshape(B, P, D)
+                    # 对 sigma，仅按尺度因子放大，不做平移
+                    # 这里简化处理：用 (x_raw_std / x_scaled_std) 的近似常数因子，
+                    # 对于 StandardScaler 这等价于乘以 dataset 级别的 std。
+                    if hasattr(self.scaler, "std_"):
+                        std = torch.as_tensor(
+                            self.scaler.std_, device=device, dtype=sigma.dtype
+                        ).view(1, 1, -1)
+                        sigma_orig = sigma * std
+                    else:
+                        sigma_orig = sigma
+                    y_hat = y_hat_orig
+                    sigma = sigma_orig
+
+                # 将 μ_Y_hat, σ_Y_hat 聚合到时间维度的均值： [B, P, D] -> [B, 1, D]
+                # mu_Y_hat = y_hat.mean(dim=1, keepdim=True)
+                # sigma_Y_hat = sigma.mean(dim=1, keepdim=True)
+                mu_Y_hat = y_hat
+                sigma_Y_hat = sigma
+
+                # 3.3 计算残差空间变量
+                #     Z_RevIN: 使用历史统计量 (μ_X, σ_X)
+                #     Z_PDN  : 使用预测统计量 (μ_Y_hat, σ_Y_hat)
+                # 广播: μ_X, σ_X 为 [B, 1, D]，自动广播到 [B, P, D]
+                Z_RevIN = (Y - mu_X) / (sigma_X + eps)
+                Z_PDN = (Y - mu_Y_hat) / (sigma_Y_hat + eps)
+
+                # 3.4 收集到 CPU / numpy
+                Ys.append(Y.detach().cpu())
+                mu_Xs.append(mu_X.detach().cpu())
+                sigma_Xs.append(sigma_X.detach().cpu())
+                mu_Y_hats.append(mu_Y_hat.detach().cpu())
+                sigma_Y_hats.append(sigma_Y_hat.detach().cpu())
+                Z_RevINs.append(Z_RevIN.detach().cpu())
+                Z_PDNs.append(Z_PDN.detach().cpu())
+
+                progress_bar.update(batch_x.shape[0])
+
+        # 4. 拼接所有 batch，得到全 Test Set 上的结果
+        def _cat_to_numpy(tensor_list):
+            return torch.cat(tensor_list, dim=0).numpy() if tensor_list else None
+
+        Y_all = _cat_to_numpy(Ys)
+        mu_X_all = _cat_to_numpy(mu_Xs)
+        sigma_X_all = _cat_to_numpy(sigma_Xs)
+        mu_Y_hat_all = _cat_to_numpy(mu_Y_hats)
+        sigma_Y_hat_all = _cat_to_numpy(sigma_Y_hats)
+        Z_RevIN_all = _cat_to_numpy(Z_RevINs)
+        Z_PDN_all = _cat_to_numpy(Z_PDNs)
+
+        result = {
+            "Y": Y_all,
+            "mu_X": mu_X_all,
+            "sigma_X": sigma_X_all,
+            "mu_Y_hat": mu_Y_hat_all,
+            "sigma_Y_hat": sigma_Y_hat_all,
+            "Z_RevIN": Z_RevIN_all,
+            "Z_PDN": Z_PDN_all,
+        }
+
+        # 5. 保存到 .npz 方便后续分析
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        np.savez_compressed(save_path, **{k: v for k, v in result.items() if v is not None})
+
+        print(f"Residuals and statistics saved to: {save_path}")
+        print(f"Y shape           : {None if Y_all is None else Y_all.shape}")
+        print(f"mu_X / sigma_X    : {None if mu_X_all is None else mu_X_all.shape}")
+        print(f"mu_Y_hat / sigma_Y_hat: {None if mu_Y_hat_all is None else mu_Y_hat_all.shape}")
+        print(f"Z_RevIN / Z_PDN   : "
+              f"{None if Z_RevIN_all is None else Z_RevIN_all.shape}, "
+              f"{None if Z_PDN_all is None else Z_PDN_all.shape}")
+
+        # 命令行场景通常不需要在终端打印全部结果，默认不返回字典，避免 Fire 把 result 打印出来
+        if return_result:
+            return result
+        else:
+            return None
 
 
 if __name__ == '__main__':

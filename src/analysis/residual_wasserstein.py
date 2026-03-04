@@ -74,6 +74,55 @@ def _wasserstein_empirical(
     return float(np.mean(np.abs(qa - qb)))
 
 
+def _kl_empirical_to_normal(
+    z: np.ndarray,
+    clip_range: Tuple[float, float] | None = None,
+    num_bins: int = 200,
+    eps: float = 1e-8,
+) -> float:
+    """
+    使用直方图近似 KL(p || q)，其中：
+        - p: 残差 Z 的经验分布
+        - q: 标准正态 N(0, 1)
+
+    具体做法：
+        1) 在给定区间内对 Z 做直方图，得到经验概率 p_i
+        2) 在同一分箱中心上评估 N(0,1) 的 pdf，并离散化为 q_i
+        3) KL(p||q) ≈ sum_i p_i * log(p_i / q_i)
+    """
+    z = np.asarray(z, dtype=np.float64).ravel()
+    if z.size == 0:
+        return float("nan")
+
+    if clip_range is not None:
+        vmin, vmax = clip_range
+    else:
+        # 若未指定区间，则使用数据的 [1%, 99%] 分位作为稳定区间
+        vmin, vmax = np.quantile(z, [0.01, 0.99])
+
+    # 经验直方图（不使用 density，让 p_i 直接是概率）
+    hist, bin_edges = np.histogram(z, bins=num_bins, range=(vmin, vmax), density=False)
+    total = hist.sum()
+    if total == 0:
+        return float("nan")
+    p = hist.astype(np.float64) / float(total)
+
+    # 分箱中心
+    centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+
+    # 在中心点上评估标准正态 pdf，并离散化成近似概率 q_i
+    # pdf(x) = exp(-0.5 x^2) / sqrt(2π)
+    q_unnorm = np.exp(-0.5 * centers ** 2) / np.sqrt(2.0 * np.pi)
+    q = q_unnorm / (q_unnorm.sum() + eps)
+
+    # 避免 log(0)
+    p_safe = np.clip(p, eps, 1.0)
+    q_safe = np.clip(q, eps, 1.0)
+
+    kl = float(np.sum(p_safe * np.log(p_safe / q_safe)))
+    return kl
+
+
 def compute_wasserstein_metrics(
     npz_path: str,
     clip_range: Tuple[float, float] | None,
@@ -116,6 +165,45 @@ def compute_wasserstein_metrics(
         "num_samples_revin": float(z_revin_flat.size),
         "num_samples_pdn": float(z_pdn_flat.size),
         "normal_sample_size": float(normal_sample_size),
+    }
+    return metrics
+
+
+def compute_kl_metrics(
+    npz_path: str,
+    clip_range: Tuple[float, float] | None,
+    num_bins: int = 200,
+) -> Dict[str, float]:
+    """
+    计算 Z_RevIN, Z_PDN 相对于标准正态 N(0,1) 的 KL 散度：
+        - KL(RevIN || N(0,1))
+        - KL(PDN   || N(0,1))
+
+    与 Wasserstein 指标类似，先展平并（可选）截断，再在给定区间上用直方图近似。
+    """
+    data = np.load(npz_path)
+    if "Z_RevIN" not in data or "Z_PDN" not in data:
+        raise KeyError(
+            f"{npz_path} 中未找到 'Z_RevIN' / 'Z_PDN'，"
+            f"请确认已使用 `extract_residuals_on_test` 生成该文件。"
+        )
+
+    z_revin = data["Z_RevIN"]
+    z_pdn = data["Z_PDN"]
+
+    z_revin_flat, ratio_revin = _flatten_and_clip(z_revin, clip_range)
+    z_pdn_flat, ratio_pdn = _flatten_and_clip(z_pdn, clip_range)
+
+    kl_revin = _kl_empirical_to_normal(z_revin_flat, clip_range=clip_range, num_bins=num_bins)
+    kl_pdn = _kl_empirical_to_normal(z_pdn_flat, clip_range=clip_range, num_bins=num_bins)
+
+    metrics: Dict[str, float] = {
+        "kl_revin_vs_normal": kl_revin,
+        "kl_pdn_vs_normal": kl_pdn,
+        "clip_ratio_revin": ratio_revin,
+        "clip_ratio_pdn": ratio_pdn,
+        "num_samples_revin": float(z_revin_flat.size),
+        "num_samples_pdn": float(z_pdn_flat.size),
     }
     return metrics
 
@@ -176,15 +264,26 @@ def main() -> None:
     else:
         clip_range = (args.clip_min, args.clip_max)
 
-    metrics = compute_wasserstein_metrics(
+    # 1) Wasserstein-1 指标
+    metrics_w = compute_wasserstein_metrics(
         npz_path=args.npz_path,
         clip_range=clip_range,
         normal_sample_size=args.normal_sample_size,
         seed=args.seed,
     )
 
+    # 2) KL 散度指标（相对于标准正态 N(0,1)）
+    metrics_kl = compute_kl_metrics(
+        npz_path=args.npz_path,
+        clip_range=clip_range,
+        num_bins=200,
+    )
+
+    # 合并两类指标（若存在同名键，KL 指标会覆盖 Wasserstein 指标，但目前键名互不冲突）
+    metrics = {**metrics_w, **metrics_kl}
+
     # 控制台打印，便于直接查看
-    print("===== Wasserstein-1 distances (W1) =====")
+    print("===== Wasserstein-1 distances (W1) & KL divergence =====")
     if clip_range is None:
         print("Clipping: disabled (using full residual range)")
     else:
@@ -192,6 +291,8 @@ def main() -> None:
     print(f"W1(RevIN,  N(0,1)) = {metrics['w1_revin_vs_normal']:.6f}")
     print(f"W1(PDN,    N(0,1)) = {metrics['w1_pdn_vs_normal']:.6f}")
     print(f"W1(RevIN, PDN   ) = {metrics['w1_revin_vs_pdn']:.6f}")
+    print(f"KL(RevIN || N(0,1)) = {metrics['kl_revin_vs_normal']:.6f}")
+    print(f"KL(PDN   || N(0,1)) = {metrics['kl_pdn_vs_normal']:.6f}")
     print(
         f"Clipped ratio – RevIN: {metrics['clip_ratio_revin']:.4f}, "
         f"PDN: {metrics['clip_ratio_pdn']:.4f}"

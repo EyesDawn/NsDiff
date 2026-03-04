@@ -17,6 +17,7 @@ from src.experiments.iReflow import iReflowExp, iReflowEarlyStopping
 from torch_timeseries.utils.model_stats import count_parameters
 from torch_timeseries.utils.reproduce import reproducible
 from src.utils.revin import RevIN
+from src.utils.uncertainty_eval import compute_sigma_metrics
 
 try:
     import wandb
@@ -217,9 +218,8 @@ class UncertaintyEstimatorPretrainExp(iReflowExp):
                 val_metrics['mean_sigma'].append(sigma.mean().item())
                 val_metrics['mae_point'].append(F.l1_loss(y_hat, batch_y).item())
         
-        # 调用基类的 _evaluate 方法获取概率预测指标
-        from src.experiments.prob_forecast import ProbForecastExp
-        result = ProbForecastExp._evaluate(self, self.val_loader)
+        # 使用当前类的 _evaluate（已重写，避免经过 Velocity Network）
+        result = self._evaluate(self.val_loader)
         
         # 添加 NLL Loss 和 sigma 统计
         result['loss'] = np.mean(val_losses)
@@ -229,6 +229,98 @@ class UncertaintyEstimatorPretrainExp(iReflowExp):
         
         # 清理标志
         delattr(self, '_num_samples_for_eval')
+        return result
+    
+    def _evaluate(self, dataloader):
+        """
+        Stage 2 专用评估逻辑（方案 A）：
+        
+        - 完全绕过 Velocity Network / Rectified Flow，只基于冻结的 iTransformer 点预测 y_hat
+        - 使用 ProbForecastExp 中定义的概率指标（CRPS / ProbMAE / ProbMSE 等），其中分布通过
+          一个退化分布近似：所有样本都等于 y_hat（不注入额外随机噪声）
+        - 同时保留基于 (y_hat, sigma) 的高斯校准指标（sigma_*），与 Stage 3 的命名保持一致
+        """
+        self.model.eval()
+        self.metrics.reset()
+
+        # 与 iReflowExp._evaluate 保持一致的 sigma 评估配置
+        interval_levels = getattr(self, "sigma_interval_levels", [0.9])
+        pit_bins = int(getattr(self, "pit_bins", 20))
+        default_sigma_metric_keys = [
+            "gauss_nll",
+            "gauss_crps",
+            "cov_90",
+            "width_90",
+            "pit_ks",
+            "sharpness_sigma_mean",
+        ]
+        sigma_metric_keys = getattr(self, "sigma_metric_keys", default_sigma_metric_keys)
+
+        sigma_sums = {}
+        sigma_counts = 0
+
+        # 当前评估使用的样本数（至少为 1）
+        num_samples = max(1, int(getattr(self, "_num_samples_for_eval", self.num_samples)))
+
+        with tqdm(total=len(dataloader.dataset)) as progress_bar:
+            with torch.no_grad():
+                for (
+                    batch_x,
+                    batch_y,
+                    origin_x,
+                    origin_y,
+                    batch_x_date_enc,
+                    batch_y_date_enc,
+                ) in dataloader:
+                    batch_x = batch_x.to(self.device).float()
+                    batch_y = batch_y.to(self.device).float()
+                    origin_y = origin_y.to(self.device).float()
+                    batch_x_date_enc = batch_x_date_enc.to(self.device).float()
+
+                    # 仅通过冻结的 iTransformer + uncertainty_estimator 获取 y_hat 与 sigma
+                    enc_features, y_hat, sigma = self.model.get_encoder_features(
+                        batch_x, batch_x_date_enc
+                    )
+
+                    # 构造退化“分布”：所有样本都等于 y_hat，完全不经过 Velocity Network
+                    # 形状: [B, P, D, S]
+                    preds = y_hat.unsqueeze(-1).expand(-1, -1, -1, num_samples)
+                    truths = batch_y
+                    if getattr(self, "invtrans_loss", False):
+                        preds = self.scaler.inverse_transform(preds)
+                        truths = origin_y
+
+                    self.metrics.update(
+                        preds.contiguous().cpu().detach(),
+                        truths.contiguous().cpu().detach(),
+                    )
+
+                    # sigma 指标：在 batch_y / y_hat / sigma 同一尺度上计算（不做 inverse_transform）
+                    sigma_metrics = compute_sigma_metrics(
+                        y=batch_y.detach().cpu(),
+                        mu=y_hat.detach().cpu(),
+                        sigma=sigma.detach().cpu(),
+                        interval_levels=list(interval_levels),
+                        pit_bins=pit_bins,
+                    )
+                    # 只保留关键指标，避免日志过多
+                    for k, v in sigma_metrics.items():
+                        if sigma_metric_keys is not None and k not in sigma_metric_keys:
+                            continue
+                        sigma_sums[k] = sigma_sums.get(k, 0.0) + float(v)
+                    sigma_counts += 1
+
+                    progress_bar.update(batch_x.shape[0])
+
+        # 概率预测指标
+        result = {name: float(metric.compute()) for name, metric in self.metrics.items()}
+
+        # 汇总 sigma 指标（沿 batch 取平均），并加上 "sigma_" 前缀
+        if sigma_counts > 0:
+            result.update(
+                {f"sigma_{k}": float(v / sigma_counts) for k, v in sigma_sums.items()}
+            )
+
         return result
     
     def _setup_estimator_run_paths(self, setting: str, seed: int):

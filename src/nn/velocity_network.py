@@ -204,11 +204,7 @@ class VelocityNetwork(nn.Module):
         # [B, P, D] -> [B, D, P]
         x = z_tau.permute(0, 2, 1)
         # [B, D, P] -> [B, D, d_model]
-        x_emb = self.value_embedding(x)
-        y_emb = self.value_embedding(y_anchor)
-
-        # 显式注入 y_hat 信息，帮助模型理解预测的相对位置
-        x = x_emb + y_emb
+        x = self.value_embedding(x)
         x = self.dropout_emb(x)
         
         # Step 2: Time Embedding

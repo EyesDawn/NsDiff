@@ -8,48 +8,41 @@ from src.utils.revin import RevIN
 
 class iReflow(nn.Module):
     """
-    iReflow主模型
-    
-    包含两个阶段:
-    1. Encoder Stage (Conditioner): iTransformer提供点预测、变量特征和置信度
-    2. Flow Stage (Generator): 学习从预测分布到真实分布的速度场
+    iReflow (RevIN 版本)
+
+    架构：
+    1. 条件编码器（Conditioner）：
+       - use_itransformer_enc=True ：iTransformer 编码器输出变量特征 H（含变量间自注意力）
+       - use_itransformer_enc=False：RevIN 标准化历史序列倒置嵌入（轻量替代）
+    2. Flow 生成器（Generator）：
+       - 以 RevIN 统计量 (μ_X, σ_X) 定义源状态和相对坐标系
+       - VelocityNetwork 学习从 N(μ_X, σ_X²) 到 y_gt 的速度场
     """
-    
+
     def __init__(self, configs):
         super(iReflow, self).__init__()
-        
+
         self.seq_len = configs.seq_len
         self.pred_len = configs.pred_len
         self.d_model = configs.d_model
-        
-        # Stage 1: iTransformer as Conditioner
-        self.itransformer = iTransformer(configs)
-        
-        # 不确定性估计器（Aleatoric Uncertainty）
-        # 改进：使用encoder特征和预测残差来估计sigma
-        # 输入：encoder特征 [B, D, d_model]
-        # 输出：sigma [B, D, P] -> [B, P, D]
-        self.uncertainty_estimator = nn.Sequential(
-            nn.Linear(configs.d_model, configs.d_model // 2),
-            nn.ReLU(),
-            # nn.Dropout(configs.dropout if hasattr(configs, 'dropout') else 0.1),
-            nn.Linear(configs.d_model // 2, configs.pred_len),
-            nn.Softplus()  # 确保sigma > 0
-        )
-        
-        # 初始化：让sigma的初始值更合理（基于预测长度的经验值）
-        # 使用较小的初始值，避免sigma过大导致训练不稳定
-        for m in self.uncertainty_estimator.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight, gain=0.1)  # 较小的gain，让sigma初始值较小
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0.0)
-        
-        # RevIN：用于统计历史序列的 μ_X, σ_X（仅做统计，不直接改动模型输入）
-        # num_features 对于 affine=False 仅用于参数形状，这里使用 enc_in 保持语义一致
+
+        # ── 是否使用 iTransformer 编码器作为条件特征 ─────────────────────────
+        # True ：使用 iTransformer encoder 输出的变量 token [B, D, d_model]
+        # False：使用 RevIN 标准化历史序列的倒置嵌入（更轻量，无跨变量注意力）
+        self.use_itransformer_enc = getattr(configs, 'use_itransformer_enc', True)
+
+        if self.use_itransformer_enc:
+            # 路径 A：完整 iTransformer 编码器
+            self.itransformer = iTransformer(configs)
+        else:
+            # 路径 B：轻量替代编码器 [B, D, seq_len] -> [B, D, d_model]
+            self.history_embedding = nn.Linear(configs.seq_len, configs.d_model)
+
+        # ── RevIN：统计历史序列的 μ_X, σ_X ──────────────────────────────────
+        # affine=False：仅做统计（均值 / 标准差），无可学习参数
         self.revin = RevIN(num_features=getattr(configs, "enc_in", 1), affine=False)
 
-        # Stage 2: Velocity Network as Generator
+        # ── Velocity Network ─────────────────────────────────────────────────
         self.velocity_net = VelocityNetwork(
             pred_len=configs.pred_len,
             d_model=configs.d_model,
@@ -59,82 +52,9 @@ class iReflow(nn.Module):
             dropout=configs.dropout,
             use_relative_space=configs.use_relative_space
         )
-        
-        # 采样步数
-        self.num_sampling_steps = configs.num_sampling_steps if hasattr(configs, 'num_sampling_steps') else 1
 
-        # Loss 权重（默认不改变现有行为）
-        self.nll_loss_weight = getattr(configs, 'nll_loss_weight', 1.0)
-        self.velocity_loss_weight = getattr(configs, 'velocity_loss_weight', 1.0)
-
-        
-    def get_encoder_features(self, x_enc, x_mark_enc):
-        """
-        获取iTransformer编码器的变量特征H
-        
-        Args:
-            x_enc: [B, L, D] 历史序列
-            x_mark_enc: [B, L, T] 时间标记
-        Returns:
-            enc_features: [B, D, d_model] 变量特征（只包含原始变量，不含时间特征）
-            y_hat: [B, P, D] 点预测
-            sigma: [B, P, D] 预测不确定性
-        """
-        # 记录原始变量数量（用于过滤协变量）
-        B, L, N = x_enc.shape  # N是原始变量数
-        
-        # 获取embedding和encoder输出
-        if self.itransformer.use_norm:
-            means = x_enc.mean(1, keepdim=True).detach()
-            x_enc_norm = x_enc - means
-            stdev = torch.sqrt(torch.var(x_enc_norm, dim=1, keepdim=True, unbiased=False) + 1e-5)
-            x_enc_norm = x_enc_norm / stdev
-            stdev = stdev.detach()
-        else:
-            x_enc_norm = x_enc
-            means = None
-            stdev = None
-        
-        # Embedding: [B, L, D] -> [B, D+T, d_model] (如果x_mark不为None，会拼接时间特征)
-        enc_out = self.itransformer.enc_embedding(x_enc_norm, x_mark_enc)
-        
-        # Encoder: [B, D+T, d_model] -> [B, D+T, d_model]
-        enc_features_full, _ = self.itransformer.encoder(enc_out, attn_mask=None)
-        
-        # 过滤协变量：只保留前N个变量（原始变量），去掉时间特征
-        # [B, D+T, d_model] -> [B, D, d_model]
-        enc_features = enc_features_full[:, :N, :]
-        
-        # 点预测: [B, D, d_model] -> [B, D, P] -> [B, P, D]
-        # 注意：projector在enc_features_full上操作，然后过滤
-        y_hat_full = self.itransformer.projector(enc_features_full).permute(0, 2, 1)  # [B, P, D+T]
-        y_hat = y_hat_full[:, :, :N]  # [B, P, D] 过滤协变量
-        
-        # 反归一化
-        if self.itransformer.use_norm:
-            y_hat = y_hat * stdev[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1)
-            y_hat = y_hat + means[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1)
-        
-        # 估计不确定性: [B, D, d_model] -> [B, D, P] -> [B, P, D]
-        sigma = self.uncertainty_estimator(enc_features).permute(0, 2, 1)
-        
-        # 如果使用了归一化，sigma也需要相应缩放
-        # 改进：使用相对标准差，避免sigma过大
-        if self.itransformer.use_norm:
-            # 使用相对标准差（相对于均值），让sigma更合理
-            # sigma = sigma * stdev[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1)
-            # 改进：使用较小的缩放因子，避免sigma过大
-            relative_std = stdev[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1)
-            # 限制sigma的最大值，避免过大
-            # 确保min和max都是Tensor，形状匹配
-            min_sigma = torch.full_like(sigma, 1e-6)
-            max_sigma = relative_std * 2.0
-            sigma = torch.clamp(sigma * relative_std, min=min_sigma, max=max_sigma)
-        else:
-            # 即使没有归一化，也限制sigma的范围
-            sigma = torch.clamp(sigma, min=1e-6, max=1.0)
-        
-        return enc_features, y_hat, sigma
+        # ODE 求解步数（1 = one-step generation）
+        self.num_sampling_steps = getattr(configs, 'num_sampling_steps', 1)
     
     def compute_loss(self, x_enc, x_mark_enc, y_gt):
         """
@@ -160,13 +80,13 @@ class iReflow(nn.Module):
         B, P, D = y_gt.shape
         device = y_gt.device
 
-        # Stage 1: 获取 iTransformer 编码器特征（仅用于 Cross-Attention 条件）
-        enc_features = self._get_enc_features(x_enc, x_mark_enc)
-
-        # Stage 1b: RevIN 统计历史序列的 μ_X, σ_X（形状 [B, 1, D]）
+        # Stage 1a: RevIN 统计历史序列的 μ_X, σ_X（形状 [B, 1, D]）
         _ = self.revin(x_enc, mode="norm")
         mu_X = self.revin.mean     # [B, 1, D]
         sigma_X = self.revin.stdev # [B, 1, D]
+
+        # Stage 1b: 获取条件编码器特征（Cross-Attention Key/Value）
+        enc_features = self._get_enc_features(x_enc, x_mark_enc, mu_X, sigma_X)
 
         # Stage 2: 构建 Rectified Flow
         # 采样噪声 epsilon ~ N(0, I)
@@ -203,25 +123,49 @@ class iReflow(nn.Module):
 
         return velocity_loss, loss_dict
     
-    def _get_enc_features(self, x_enc, x_mark_enc):
+    def _get_enc_features(self, x_enc, x_mark_enc, mu_X, sigma_X):
         """
-        只获取 iTransformer 编码器输出的变量特征（不计算 y_hat / sigma）。
-        用于 flow 阶段的 Cross-Attention 条件。
+        获取 Cross-Attention 条件特征，形状 [B, D, d_model]。
+
+        Args:
+            x_enc:    [B, L, D] 历史序列
+            x_mark_enc: 时间标记
+            mu_X:     [B, 1, D] RevIN 均值（已在外部计算好）
+            sigma_X:  [B, 1, D] RevIN 标准差（已在外部计算好）
+
+        路径 A（use_itransformer_enc=True）：
+            iTransformer 编码器输出的变量 token（含变量间自注意力）。
+
+        路径 B（use_itransformer_enc=False）：
+            RevIN 标准化历史序列倒置嵌入（轻量替代）：
+                z_enc = (x_enc - mu_X) / sigma_X   [B, L, D]
+                → 转置 [B, D, L]
+                → Linear(seq_len, d_model) → [B, D, d_model]
+            保留变量级历史模式，通过 RevIN 消除均值/方差影响。
 
         Returns:
             enc_features: [B, D, d_model]
         """
         B, L, N = x_enc.shape
-        if self.itransformer.use_norm:
-            means = x_enc.mean(1, keepdim=True).detach()
-            x_enc_norm = x_enc - means
-            stdev = torch.sqrt(torch.var(x_enc_norm, dim=1, keepdim=True, unbiased=False) + 1e-5)
-            x_enc_norm = x_enc_norm / stdev
+
+        if self.use_itransformer_enc:
+            # ── 路径 A：完整 iTransformer 编码器 ──────────────────────────────
+            if self.itransformer.use_norm:
+                means = x_enc.mean(1, keepdim=True).detach()
+                x_enc_norm = x_enc - means
+                stdev = torch.sqrt(torch.var(x_enc_norm, dim=1, keepdim=True, unbiased=False) + 1e-5)
+                x_enc_norm = x_enc_norm / stdev
+            else:
+                x_enc_norm = x_enc
+            enc_out = self.itransformer.enc_embedding(x_enc_norm, x_mark_enc)
+            enc_features_full, _ = self.itransformer.encoder(enc_out, attn_mask=None)
+            return enc_features_full[:, :N, :]  # [B, D, d_model]
+
         else:
-            x_enc_norm = x_enc
-        enc_out = self.itransformer.enc_embedding(x_enc_norm, x_mark_enc)
-        enc_features_full, _ = self.itransformer.encoder(enc_out, attn_mask=None)
-        return enc_features_full[:, :N, :]  # [B, D, d_model]
+            # ── 路径 B：RevIN 倒置嵌入（轻量替代） ────────────────────────────
+            # mu_X / sigma_X 由外部传入，无需在此重复计算 RevIN
+            z_enc = (x_enc - mu_X) / sigma_X          # [B, L, D]
+            return self.history_embedding(z_enc.permute(0, 2, 1))  # [B, D, d_model]
 
     @torch.no_grad()
     def sample(self, x_enc, x_mark_enc, num_samples=1, temperature=1.0):
@@ -243,13 +187,13 @@ class iReflow(nn.Module):
         B, L, D = x_enc.shape
         device = x_enc.device
 
-        # Stage 1: 获取编码器特征（仅 enc_features，不计算 y_hat / sigma）
-        enc_features = self._get_enc_features(x_enc, x_mark_enc)
-
-        # Stage 1b: RevIN 统计历史序列的 μ_X, σ_X（形状 [B, 1, D]）
+        # Stage 1a: RevIN 统计历史序列的 μ_X, σ_X（形状 [B, 1, D]）
         _ = self.revin(x_enc, mode="norm")
         mu_X = self.revin.mean     # [B, 1, D]
         sigma_X = self.revin.stdev # [B, 1, D]
+
+        # Stage 1b: 获取条件编码器特征（Cross-Attention Key/Value）
+        enc_features = self._get_enc_features(x_enc, x_mark_enc, mu_X, sigma_X)
 
         # Stage 2: 采样初始化
         samples = []

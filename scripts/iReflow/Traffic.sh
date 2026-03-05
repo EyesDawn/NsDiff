@@ -25,7 +25,8 @@ E_LAYERS=4
 FLOW_LAYERS=3
 D_FF=512
 DROPOUT=0.1
-USE_RELATIVE_SPACE=False
+USE_RELATIVE_SPACE=True
+USE_ITRANSFORMER_ENC=True
 
 # 训练配置
 IS_TRAINING=1
@@ -151,6 +152,7 @@ python3 -u ./src/experiments/iReflow.py \
     --log_sigma_stats ${LOG_SIGMA_STATS} \
     --device ${DEVICE} \
     --use_relative_space ${USE_RELATIVE_SPACE} \
+    --use_itransformer_enc ${USE_ITRANSFORMER_ENC} \
     runs --seeds="${SEEDS}"
 
 echo ""

@@ -85,6 +85,7 @@ class iReflowExp(ProbForecastExp):
     class_strategy: str = 'projection'
     factor: int = 1
     use_relative_space: bool = True
+    use_itransformer_enc: bool = True  # False 时改用轻量的 RevIN 倒置嵌入作为 Cross-Attention 条件
     
     # 训练配置
     is_training: int = 1
@@ -170,6 +171,7 @@ class iReflowExp(ProbForecastExp):
         self.model_configs.nll_loss_weight = getattr(self, "nll_loss_weight", 1.0)
         self.model_configs.velocity_loss_weight = getattr(self, "velocity_loss_weight", 1.0)
         self.model_configs.use_relative_space = self.use_relative_space
+        self.model_configs.use_itransformer_enc = self.use_itransformer_enc
     
     def _init_model(self):
         """初始化模型"""
@@ -206,6 +208,9 @@ class iReflowExp(ProbForecastExp):
     def _freeze_itransformer(self):
         """冻结 iTransformer 参数（在加载预训练权重后调用）"""
         if self.is_training == 1:
+            if not hasattr(self.model, 'itransformer'):
+                print("Model has no itransformer (use_itransformer_enc=False), skipping freeze.")
+                return
             for param in self.model.itransformer.parameters():
                 param.requires_grad = False
             print("iTransformer parameters frozen after loading pretrained weights")
@@ -217,6 +222,9 @@ class iReflowExp(ProbForecastExp):
     def _freeze_uncertainty_estimator(self):
         """冻结 Uncertainty Estimator 参数（在加载预训练权重后调用）"""
         if self.is_training == 1:
+            if not hasattr(self.model, 'uncertainty_estimator'):
+                print("Model has no uncertainty_estimator, skipping freeze.")
+                return
             for param in self.model.uncertainty_estimator.parameters():
                 param.requires_grad = False
             print("Uncertainty Estimator parameters frozen after loading pretrained weights")
@@ -608,6 +616,11 @@ class iReflowExp(ProbForecastExp):
                 f"pretrain_uncertainty_estimator.py first."
             )
         
+        # revin 版本的模型已移除 uncertainty_estimator，跳过加载
+        if not hasattr(self.model, 'uncertainty_estimator'):
+            print("Model has no uncertainty_estimator (revin version), skipping Stage 2 checkpoint loading.")
+            return
+
         print(f'Loading pretrained Uncertainty Estimator from {best_model_path}')
         checkpoint = torch.load(best_model_path, map_location=self.device, weights_only=True)
         
@@ -642,6 +655,11 @@ class iReflowExp(ProbForecastExp):
         只加载 iTransformer 的权重（用于 Stage 2 和 Stage 3）
         路径规则：os.path.join(self.checkpoints, setting) + '/checkpoint.pth'
         """
+        # revin 版本 use_itransformer_enc=False 时模型无 itransformer，跳过加载
+        if not hasattr(self.model, 'itransformer'):
+            print("Model has no itransformer (use_itransformer_enc=False), skipping iTransformer weight loading.")
+            return
+
         path = os.path.join(self.checkpoints, setting)
         best_model_path = os.path.join(path, 'checkpoint.pth')
         

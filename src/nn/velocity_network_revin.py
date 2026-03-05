@@ -114,7 +114,6 @@ class VariateCrossAttentionLayer(nn.Module):
         # Adaptive LayerNorm for time injection
         self.ada_norm1 = AdaptiveLayerNorm(d_model)
         self.ada_norm2 = AdaptiveLayerNorm(d_model)
-        self.ada_norm3 = AdaptiveLayerNorm(d_model)
     
     def forward(self, x, enc_features, time_emb):
         """
@@ -133,25 +132,26 @@ class VariateCrossAttentionLayer(nn.Module):
         
         # Cross-Attention
         residual = x
-        x = self.ada_norm2(x, time_emb)
+        x = self.norm1(x)
         new_x, _ = self.cross_attention(x, enc_features, enc_features, attn_mask=None)
         x = residual + self.dropout(new_x)
         
         # Feed-Forward with time-adaptive norm
         residual = x
-        x = self.ada_norm3(x, time_emb)
+        y = self.ada_norm2(x, time_emb)
         y = self.dropout(self.activation(self.conv1(y.transpose(-1, 1))))
         y = self.dropout(self.conv2(y).transpose(-1, 1))
         x = residual + y
         
-        return x
+        return self.norm3(x)
 
 
 class VelocityNetwork(nn.Module):
     """
     速度场网络 v_θ
-    输入：噪声状态X_τ、时间τ、条件(H, y_hat, sigma)
+    输入：噪声状态 X_τ、时间 τ、条件 (H, μ_X, σ_X)
     输出：速度场 v
+    其中 μ_X, σ_X 来自 RevIN 对历史序列 X 的统计量。
     """
     def __init__(self, pred_len, d_model=512, n_heads=8, e_layers=3, d_ff=2048, dropout=0.1, use_relative_space=True):
         super(VelocityNetwork, self).__init__()
@@ -180,22 +180,23 @@ class VelocityNetwork(nn.Module):
         # Layer Norm
         self.norm = nn.LayerNorm(d_model)
     
-    def forward(self, x_tau, tau, enc_features, y_hat, sigma):
+    def forward(self, x_tau, tau, enc_features, mu_X, sigma_X):
         """
         Args:
             x_tau: [B, P, D] 当前流状态
             tau: [B] or [B, 1] flow time ∈ [0, 1]
             enc_features: [B, D, d_model] iTransformer编码器输出的变量特征H
-            y_hat: [B, P, D] iTransformer的点预测
-            sigma: [B, P, D] 预测不确定性
+            mu_X: [B, 1, D] RevIN 统计得到的历史均值 μ_X
+            sigma_X: [B, 1, D] RevIN 统计得到的历史标准差 σ_X
         Returns:
             v: [B, P, D] 速度场
         """
         
         # Step 0: 坐标变换到相对空间 (可选，通过配置控制)
         if self.use_relative_space:
-            # sigma_safe = torch.clamp(sigma, min=0.01)  # 数值稳定性
-            z_tau = (x_tau - y_hat) / sigma
+            # 使用 RevIN 统计量 μ_X, σ_X 进行标准化
+            # 注意：μ_X, σ_X 形状为 [B, 1, D]，会自动广播到 [B, P, D]
+            z_tau = (x_tau - mu_X) / sigma_X
             # z_tau = torch.clamp(z_tau, -10, 10)  # 防止极端值
         else:
             z_tau = x_tau
@@ -204,11 +205,7 @@ class VelocityNetwork(nn.Module):
         # [B, P, D] -> [B, D, P]
         x = z_tau.permute(0, 2, 1)
         # [B, D, P] -> [B, D, d_model]
-        x_emb = self.value_embedding(x)
-        y_emb = self.value_embedding(y_anchor)
-
-        # 显式注入 y_hat 信息，帮助模型理解预测的相对位置
-        x = x_emb + y_emb
+        x = self.value_embedding(x)
         x = self.dropout_emb(x)
         
         # Step 2: Time Embedding
@@ -228,7 +225,8 @@ class VelocityNetwork(nn.Module):
 
         # Step 5: 逆变换回绝对空间
         if self.use_relative_space:
-            v = sigma * u
+            # 使用 RevIN 的 σ_X 逆变换回绝对空间
+            v = sigma_X * u
         else:
             v = u
 

@@ -501,7 +501,7 @@ class NsDiffForecast(ProbForecastExp, NsDiffParameters):
             self._run_print(f"Traininng loss : {np.mean(train_losses)}")
 
             val_result = self._val()
-            test_result = self._test()
+            # test_result = self._test()
 
             self.current_epoch = self.current_epoch + 1
             self.early_stopper(val_result['crps'], model={'model':self.model, 'cond_pred_model':self.cond_pred_model, 'cond_pred_model_g':self.cond_pred_model_g})

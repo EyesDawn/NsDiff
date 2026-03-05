@@ -9,4 +9,4 @@ python3 ./src/experiments/pretrain_f.py \
    --windows=168 \
    --epochs=50 \
    --patience=10 \
-   runs --seeds='[1, 2, 3]'
+   runs --seeds='[1]'

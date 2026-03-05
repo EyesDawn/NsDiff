@@ -25,18 +25,14 @@ E_LAYERS=4
 FLOW_LAYERS=3
 D_FF=512
 DROPOUT=0.1
+USE_RELATIVE_SPACE=False
 
 # 训练配置
 IS_TRAINING=1
 BATCH_SIZE=16
-LEARNING_RATE=0.001
-EPOCHS=30
+EPOCHS=20
 PATIENCE=6
-
-# 损失权重配置
-NLL_LOSS_WEIGHT=1
-VELOCITY_LOSS_WEIGHT=1.0
-LOG_SIGMA_STATS=True
+LR_PATIENCE=1
 
 # Flow配置
 NUM_SAMPLING_STEPS=5
@@ -53,19 +49,79 @@ GPU_ID=0
 export CUDA_VISIBLE_DEVICES=${GPU_ID}
 DEVICE="cuda:0"
 
-SEEDS='[2222]'
-WANDB_PROJECT="iReflow-v2"
+SEEDS='[2225]'
 CHECKPOINTS="./results/runs/iTransformer/"
 ITR=1
 
-# 运行实验
+# ============================================================================
+# Stage 2: 预训练 Uncertainty Estimator（不确定性估计）
+# ============================================================================
+# echo "============================================================================"
+# echo "Stage 2: Pretraining Uncertainty Estimator"
+# echo "============================================================================"
+# echo ""
+
+# STAGE2_WANDB_PROJECT="iReflow-Stage2-Uncertainty"
+# STAGE2_CHECKPOINTS="./results/runs/iTransformer/"
+
+# python3 -u ./src/experiments/pretrain_uncertainty_estimator.py \
+#     --wandb_project ${STAGE2_WANDB_PROJECT} \
+#     --is_training 1 \
+#     --root_path ${ROOT_PATH} \
+#     --data_path ${DATA_PATH} \
+#     --model_id ${MODEL_ID} \
+#     --model iReflow \
+#     --data ${DATASET} \
+#     --features ${D_FEATURES} \
+#     --seq_len ${SEQ_LEN} \
+#     --pred_len ${PRED_LEN} \
+#     --e_layers ${E_LAYERS} \
+#     --enc_in ${ENC_IN} \
+#     --dec_in ${DEC_IN} \
+#     --c_out ${C_OUT} \
+#     --des ${DES} \
+#     --d_model ${D_MODEL} \
+#     --d_ff ${D_FF} \
+#     --batch_size ${BATCH_SIZE} \
+#     --lr ${STAGE2_LR} \
+#     --itr ${ITR} \
+#     --checkpoints ${STAGE2_CHECKPOINTS} \
+#     --flow_layers ${FLOW_LAYERS} \
+#     --n_heads ${N_HEADS} \
+#     --dropout ${DROPOUT} \
+#     --epochs 10 \
+#     --patience 3 \
+#     --lr_patience 1 \
+#     --num_sampling_steps 1 \
+#     --temperature 1.0 \
+#     --num_samples 100 \
+#     --device ${DEVICE} \
+#     --use_relative_space ${USE_RELATIVE_SPACE} \
+#     runs --seeds="${SEEDS}"
+
+# echo ""
+# echo "Stage 2 completed!"
+# echo ""
+
+# ============================================================================
+# Stage 3: 训练 Velocity Network
+# ============================================================================
+echo "============================================================================"
+echo "Stage 3: Training Velocity Network"
+echo "============================================================================"
+echo ""
+
+STAGE3_WANDB_PROJECT="iReflow-Stage3-Velocity-revin"
+STAGE3_CHECKPOINTS="./results/runs/iTransformer/"
+STAGE3_LR=0.0005
+
 python3 -u ./src/experiments/iReflow.py \
-    --wandb_project ${WANDB_PROJECT} \
-    --is_training ${IS_TRAINING} \
+    --wandb_project ${STAGE3_WANDB_PROJECT} \
+    --is_training 1 \
     --root_path ${ROOT_PATH} \
     --data_path ${DATA_PATH} \
     --model_id ${MODEL_ID} \
-    --model ${MODEL_NAME} \
+    --model iReflow \
     --data ${DATASET} \
     --features ${D_FEATURES} \
     --seq_len ${SEQ_LEN} \
@@ -78,14 +134,15 @@ python3 -u ./src/experiments/iReflow.py \
     --d_model ${D_MODEL} \
     --d_ff ${D_FF} \
     --batch_size ${BATCH_SIZE} \
-    --learning_rate ${LEARNING_RATE} \
+    --lr ${STAGE3_LR} \
     --itr ${ITR} \
-    --checkpoints ${CHECKPOINTS} \
+    --checkpoints ${STAGE3_CHECKPOINTS} \
     --flow_layers ${FLOW_LAYERS} \
     --n_heads ${N_HEADS} \
     --dropout ${DROPOUT} \
     --epochs ${EPOCHS} \
     --patience ${PATIENCE} \
+    --lr_patience ${LR_PATIENCE} \
     --num_sampling_steps ${NUM_SAMPLING_STEPS} \
     --temperature ${TEMPERATURE} \
     --num_samples ${NUM_SAMPLES} \
@@ -93,7 +150,9 @@ python3 -u ./src/experiments/iReflow.py \
     --velocity_loss_weight ${VELOCITY_LOSS_WEIGHT} \
     --log_sigma_stats ${LOG_SIGMA_STATS} \
     --device ${DEVICE} \
+    --use_relative_space ${USE_RELATIVE_SPACE} \
     runs --seeds="${SEEDS}"
 
-echo "iReflow-Traffic experiment completed!"
-
+echo ""
+echo "Stage 3 completed!"
+echo ""

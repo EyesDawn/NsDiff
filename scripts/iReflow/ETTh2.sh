@@ -1,35 +1,36 @@
 #!/bin/bash
 
-# iReflow运行脚本 - SolarEnergy数据集
+# iReflow运行脚本 - ETTh1数据集
 # 使用Rectified Flow进行概率时间序列预测
 
 export PYTHONPATH=./
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 
 # 数据集配置
-DATASET="SolarEnergy"
-DATA_PATH="solar_AL/solar_AL.txt"
+DATASET="ETTh2"
+DATA_PATH="ETTh2/ETTh2.csv"
 ROOT_PATH="./data/"
 
 # 模型配置
-MODEL_ID="solar_96_192"
+MODEL_ID="ETTh2_96_192"
 MODEL_NAME="iReflow"
 D_FEATURES="M"
-ENC_IN=137
-DEC_IN=137
-C_OUT=137
+ENC_IN=7
+DEC_IN=7
+C_OUT=7
 DES="Exp"
-D_MODEL=512
+D_MODEL=128
 N_HEADS=8
 E_LAYERS=2
 FLOW_LAYERS=3
-D_FF=512
+D_FF=128
 DROPOUT=0.1
-USE_RELATIVE_SPACE=False
+USE_RELATIVE_SPACE=True
 
 # 训练配置
 IS_TRAINING=1
 BATCH_SIZE=32
+LEARNING_RATE=0.0001
 EPOCHS=20
 PATIENCE=6
 LR_PATIENCE=1
@@ -49,60 +50,61 @@ GPU_ID=0
 export CUDA_VISIBLE_DEVICES=${GPU_ID}
 DEVICE="cuda:0"
 
-SEEDS='[2223]'
+# 实验配置
+SEEDS='[2221]'
 CHECKPOINTS="./results/runs/iTransformer/"
 ITR=1
 
 # ============================================================================
 # Stage 2: 预训练 Uncertainty Estimator（不确定性估计）
 # ============================================================================
-# echo "============================================================================"
-# echo "Stage 2: Pretraining Uncertainty Estimator"
-# echo "============================================================================"
-# echo ""
+echo "============================================================================"
+echo "Stage 2: Pretraining Uncertainty Estimator"
+echo "============================================================================"
+echo ""
 
-# STAGE2_WANDB_PROJECT="iReflow-Stage2-Uncertainty"
-# STAGE2_CHECKPOINTS="./results/runs/iTransformer/"
-# STAGE2_LR=0.0001
+STAGE2_WANDB_PROJECT="iReflow-Stage2-Uncertainty"
+STAGE2_CHECKPOINTS="./results/runs/iTransformer/"
+STAGE2_LR=0.0001
 
-# python3 -u ./src/experiments/pretrain_uncertainty_estimator.py \
-#     --wandb_project ${STAGE2_WANDB_PROJECT} \
-#     --is_training 1 \
-#     --root_path ${ROOT_PATH} \
-#     --data_path ${DATA_PATH} \
-#     --model_id ${MODEL_ID} \
-#     --model iReflow \
-#     --data ${DATASET} \
-#     --features ${D_FEATURES} \
-#     --seq_len ${SEQ_LEN} \
-#     --pred_len ${PRED_LEN} \
-#     --e_layers ${E_LAYERS} \
-#     --enc_in ${ENC_IN} \
-#     --dec_in ${DEC_IN} \
-#     --c_out ${C_OUT} \
-#     --des ${DES} \
-#     --d_model ${D_MODEL} \
-#     --d_ff ${D_FF} \
-#     --batch_size ${BATCH_SIZE} \
-#     --lr ${STAGE2_LR} \
-#     --itr ${ITR} \
-#     --checkpoints ${STAGE2_CHECKPOINTS} \
-#     --flow_layers ${FLOW_LAYERS} \
-#     --n_heads ${N_HEADS} \
-#     --dropout ${DROPOUT} \
-#     --epochs 10 \
-#     --patience 3 \
-#     --lr_patience 1 \
-#     --num_sampling_steps 1 \
-#     --temperature 1.0 \
-#     --num_samples 100 \
-#     --device ${DEVICE} \
-#     --use_relative_space ${USE_RELATIVE_SPACE} \
-#     runs --seeds="${SEEDS}"
+python3 -u ./src/experiments/pretrain_uncertainty_estimator.py \
+    --wandb_project ${STAGE2_WANDB_PROJECT} \
+    --is_training 1 \
+    --root_path ${ROOT_PATH} \
+    --data_path ${DATA_PATH} \
+    --model_id ${MODEL_ID} \
+    --model iReflow \
+    --data ${DATASET} \
+    --features ${D_FEATURES} \
+    --seq_len ${SEQ_LEN} \
+    --pred_len ${PRED_LEN} \
+    --e_layers ${E_LAYERS} \
+    --enc_in ${ENC_IN} \
+    --dec_in ${DEC_IN} \
+    --c_out ${C_OUT} \
+    --des ${DES} \
+    --d_model ${D_MODEL} \
+    --d_ff ${D_FF} \
+    --batch_size ${BATCH_SIZE} \
+    --lr ${STAGE2_LR} \
+    --itr ${ITR} \
+    --checkpoints ${STAGE2_CHECKPOINTS} \
+    --flow_layers ${FLOW_LAYERS} \
+    --n_heads ${N_HEADS} \
+    --dropout ${DROPOUT} \
+    --epochs 10 \
+    --patience 3 \
+    --lr_patience 1 \
+    --num_sampling_steps 1 \
+    --temperature 1.0 \
+    --num_samples 100 \
+    --device ${DEVICE} \
+    --use_relative_space ${USE_RELATIVE_SPACE} \
+    runs --seeds="${SEEDS}"
 
-# echo ""
-# echo "Stage 2 completed!"
-# echo ""
+echo ""
+echo "Stage 2 completed!"
+echo ""
 
 # ============================================================================
 # Stage 3: 训练 Velocity Network
@@ -112,9 +114,9 @@ echo "Stage 3: Training Velocity Network"
 echo "============================================================================"
 echo ""
 
-STAGE3_WANDB_PROJECT="iReflow-Stage3-Velocity-revin"
+STAGE3_WANDB_PROJECT="iReflow-Stage3-Velocity"
 STAGE3_CHECKPOINTS="./results/runs/iTransformer/"
-STAGE3_LR=0.0005
+STAGE3_LR=0.0001
 
 python3 -u ./src/experiments/iReflow.py \
     --wandb_project ${STAGE3_WANDB_PROJECT} \
@@ -147,9 +149,6 @@ python3 -u ./src/experiments/iReflow.py \
     --num_sampling_steps ${NUM_SAMPLING_STEPS} \
     --temperature ${TEMPERATURE} \
     --num_samples ${NUM_SAMPLES} \
-    --nll_loss_weight ${NLL_LOSS_WEIGHT} \
-    --velocity_loss_weight ${VELOCITY_LOSS_WEIGHT} \
-    --log_sigma_stats ${LOG_SIGMA_STATS} \
     --device ${DEVICE} \
     --use_relative_space ${USE_RELATIVE_SPACE} \
     runs --seeds="${SEEDS}"

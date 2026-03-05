@@ -2,7 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from src.models.iTransformer import Model as iTransformer
-from src.nn.velocity_network import VelocityNetwork
+from src.nn.velocity_network_revin import VelocityNetwork
+from src.utils.revin import RevIN
 
 
 class iReflow(nn.Module):
@@ -20,12 +21,6 @@ class iReflow(nn.Module):
         self.seq_len = configs.seq_len
         self.pred_len = configs.pred_len
         self.d_model = configs.d_model
-        
-        # 损失权重配置（可调整的超参数）
-        self.nll_loss_weight = getattr(configs, 'nll_loss_weight', 1.0)
-        self.velocity_loss_weight = getattr(configs, 'velocity_loss_weight', 1.0)
-        # 调试用：记录 sigma / 误差 的统计量，帮助定位 NLL 异常偏大的原因
-        self.log_sigma_stats = getattr(configs, 'log_sigma_stats', False)
         
         # Stage 1: iTransformer as Conditioner
         self.itransformer = iTransformer(configs)
@@ -46,10 +41,14 @@ class iReflow(nn.Module):
         # 使用较小的初始值，避免sigma过大导致训练不稳定
         for m in self.uncertainty_estimator.modules():
             if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight, gain=0.01)  # 较小的gain，让sigma初始值较小
+                nn.init.xavier_uniform_(m.weight, gain=0.1)  # 较小的gain，让sigma初始值较小
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0.0)
         
+        # RevIN：用于统计历史序列的 μ_X, σ_X（仅做统计，不直接改动模型输入）
+        # num_features 对于 affine=False 仅用于参数形状，这里使用 enc_in 保持语义一致
+        self.revin = RevIN(num_features=getattr(configs, "enc_in", 1), affine=False)
+
         # Stage 2: Velocity Network as Generator
         self.velocity_net = VelocityNetwork(
             pred_len=configs.pred_len,
@@ -71,7 +70,7 @@ class iReflow(nn.Module):
         
     def get_encoder_features(self, x_enc, x_mark_enc):
         """
-        获取iTransformer编码器的变量特征H，点预测和不确定性
+        获取iTransformer编码器的变量特征H
         
         Args:
             x_enc: [B, L, D] 历史序列
@@ -111,28 +110,29 @@ class iReflow(nn.Module):
         y_hat_full = self.itransformer.projector(enc_features_full).permute(0, 2, 1)  # [B, P, D+T]
         y_hat = y_hat_full[:, :, :N]  # [B, P, D] 过滤协变量
         
-        # obtain raw output
-        raw_sigma_full = self.uncertainty_estimator(enc_features_full).permute(0, 2, 1)  # [B, P, D+T]
-
-        # 过滤协变量：只保留前N个变量（原始变量），去掉时间特征
-        raw_sigma = raw_sigma_full[:, :, :N]  # [B, P, D]
-
-        # 使用 Softplus 激活，保证正定性，且梯度平滑
-        sigma_pre_scale = F.softplus(raw_sigma, beta=1.0)
-
         # 反归一化
         if self.itransformer.use_norm:
-            scale_factor = stdev[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1)
-            mean_factor = means[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1)
-
-            y_hat = y_hat * scale_factor + mean_factor
-
-            # 乘以scale_factor为了恢复物理量纲，加上1e-6避免sigma为0
-            sigma = sigma_pre_scale * scale_factor + 1e-6
-
+            y_hat = y_hat * stdev[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1)
+            y_hat = y_hat + means[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1)
+        
+        # 估计不确定性: [B, D, d_model] -> [B, D, P] -> [B, P, D]
+        sigma = self.uncertainty_estimator(enc_features).permute(0, 2, 1)
+        
+        # 如果使用了归一化，sigma也需要相应缩放
+        # 改进：使用相对标准差，避免sigma过大
+        if self.itransformer.use_norm:
+            # 使用相对标准差（相对于均值），让sigma更合理
+            # sigma = sigma * stdev[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1)
+            # 改进：使用较小的缩放因子，避免sigma过大
+            relative_std = stdev[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1)
+            # 限制sigma的最大值，避免过大
+            # 确保min和max都是Tensor，形状匹配
+            min_sigma = torch.full_like(sigma, 1e-6)
+            max_sigma = relative_std * 2.0
+            sigma = torch.clamp(sigma * relative_std, min=min_sigma, max=max_sigma)
         else:
-            # 没有归一化，直接加上1e-6避免sigma为0
-            sigma = sigma_pre_scale + 1e-6
+            # 即使没有归一化，也限制sigma的范围
+            sigma = torch.clamp(sigma, min=1e-6, max=1.0)
         
         return enc_features, y_hat, sigma
     
@@ -145,7 +145,9 @@ class iReflow(nn.Module):
         - X_1 = y_gt (Target State)
         - X_tau = tau * X_1 + (1 - tau) * X_0 (Linear Interpolation)
         - v_target = X_1 - X_0 (Ground Truth Velocity)
-                
+        
+        Loss: E[||v_theta(X_tau, tau | H, sigma) - (X_1 - X_0)||^2]
+        
         Args:
             x_enc: [B, L, D] 历史序列
             x_mark_enc: [B, L, T] 时间标记
@@ -165,6 +167,12 @@ class iReflow(nn.Module):
         # var = sigma ** 2
         # nll_loss = 0.5 * torch.log(var + 1e-6) + 0.5 * (y_gt - y_hat)**2 / (var + 1e-6)
         # nll_loss = nll_loss.mean()
+
+        # 使用 RevIN 统计历史序列的 μ_X, σ_X（形状 [B, 1, D]）
+        # 只用于构造相对空间坐标，不改变原始输入的尺度
+        _ = self.revin(x_enc, mode="norm")
+        mu_X = self.revin.mean        # [B, 1, D]
+        sigma_X = self.revin.stdev    # [B, 1, D]
 
         # Stage 2: 构建Rectified Flow
         
@@ -192,11 +200,11 @@ class iReflow(nn.Module):
         v_target = X_1 - X_0
         
         # Stage 3: 预测速度场
-        v_pred = self.velocity_net(X_tau, tau.squeeze(), enc_features, y_hat_flow, sigma_flow)
+        # 注意：这里 VelocityNetwork(revIN 版本) 使用 RevIN 统计量 μ_X, σ_X 进行相对坐标变换
+        v_pred = self.velocity_net(X_tau, tau.squeeze(), enc_features, mu_X, sigma_X)
         
         # Stage 4: 计算损失
-        # Velocity Loss: 预测速度场与真实速度场的差异
-        # 使用MSE Loss（可以尝试Huber Loss以提高鲁棒性）
+        # MSE Loss on velocity
         velocity_loss = F.mse_loss(v_pred, v_target)
         
         # total_loss = self.nll_loss_weight * nll_loss + self.velocity_loss_weight * velocity_loss
@@ -246,6 +254,11 @@ class iReflow(nn.Module):
         
         # Stage 1: 获取条件信息
         enc_features, y_hat, sigma = self.get_encoder_features(x_enc, x_mark_enc)
+
+        # RevIN 统计历史序列的 μ_X, σ_X（形状 [B, 1, D]）
+        _ = self.revin(x_enc, mode="norm")
+        mu_X = self.revin.mean        # [B, 1, D]
+        sigma_X = self.revin.stdev    # [B, 1, D]
         
         # Stage 2: 采样初始化
         samples = []
@@ -261,7 +274,7 @@ class iReflow(nn.Module):
             if self.num_sampling_steps == 1:
                 # One-step generation (极快速)
                 tau = torch.zeros(B, device=device)
-                v = self.velocity_net(X_tau, tau, enc_features, y_hat, sigma)
+                v = self.velocity_net(X_tau, tau, enc_features, mu_X, sigma_X)
                 X_pred = X_tau + v
             else:
                 # Multi-step Euler method
@@ -270,7 +283,7 @@ class iReflow(nn.Module):
                 for i in range(self.num_sampling_steps):
                     tau_val = i * dt
                     tau = torch.ones(B, device=device) * tau_val
-                    v = self.velocity_net(X_tau, tau, enc_features, y_hat, sigma)
+                    v = self.velocity_net(X_tau, tau, enc_features, mu_X, sigma_X)
                     # Euler step
                     X_tau = X_tau + v * dt
                 X_pred = X_tau

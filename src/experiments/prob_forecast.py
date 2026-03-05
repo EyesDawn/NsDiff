@@ -28,8 +28,6 @@ from torch_timeseries.utils.reproduce import reproducible
 from torch_timeseries.core import TimeSeriesDataset, BaseIrrelevant, BaseRelevant
 from torch_timeseries.dataloader import SlidingWindowTS, ETTHLoader, ETTMLoader
 from torch_timeseries.experiments import ForecastExp
-from torch_timeseries.utils import asdict_exc
-import torch.multiprocessing as mp
 
 try:
     import wandb
@@ -174,7 +172,6 @@ class ProbForecastExp(ForecastExp):
                 preds, truths = self._process_val_batch(
                     batch_x, batch_y, batch_x_date_enc, batch_y_date_enc
                 )
-                origin_y = origin_y.to(self.device)
                 if self.invtrans_loss:
                     preds = self.scaler.inverse_transform(preds)
                     truths = origin_y
@@ -421,7 +418,7 @@ class ProbForecastExp(ForecastExp):
             self._run_print(f"Traininng loss : {np.mean(train_losses)}")
 
             val_result = self._val()
-            test_result = self._test()
+            # test_result = self._test()
 
             self.current_epoch = self.current_epoch + 1
             self.early_stopper(val_result['crps'], model=self.model)
@@ -431,7 +428,7 @@ class ProbForecastExp(ForecastExp):
             if self._use_wandb():
                 wandb.log({'training_loss' : np.mean(train_losses)}, step=self.current_epoch)
                 wandb.log( {f"val_{k}": v for k, v in val_result.items()}, step=self.current_epoch)
-                wandb.log( {f"test_{k}": v for k, v in test_result.items()}, step=self.current_epoch)
+                # wandb.log( {f"test_{k}": v for k, v in test_result.items()}, step=self.current_epoch)
 
             # self.scheduler.step()
 

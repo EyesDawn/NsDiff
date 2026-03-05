@@ -18,7 +18,6 @@
   - Self-Attention: 处理当前流状态的变量关系
   - Cross-Attention: 与iTransformer特征对齐
   - Feed-Forward Network
-- `ConfidenceGating`: 置信度门控（基于σ调节速度场）
 - `VelocityNetwork`: 主网络，整合所有组件
 
 **关键特性**：

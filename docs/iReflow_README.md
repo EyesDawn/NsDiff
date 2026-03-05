@@ -120,7 +120,6 @@ NsDiff/
 - `TimestepEmbedding`: 时间步嵌入
 - `AdaptiveLayerNorm`: 自适应层归一化（注入时间信息）
 - `VariateCrossAttentionLayer`: 变量交叉注意力层
-- `ConfidenceGating`: 置信度门控
 
 ### 2. iReflow模型 (`src/models/iReflow.py`)
 

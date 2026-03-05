@@ -3,24 +3,19 @@ iReflow实验脚本
 用于训练和评估iReflow模型
 """
 from dataclasses import dataclass, field
-import sys
 from typing import List, Dict
 import os
 import torch
 from dataclasses import dataclass, asdict, field
 import argparse
-from src.models.iReflow import iReflow
+from src.models.iReflow_revin import iReflow
 from src.experiments.prob_forecast import ProbForecastExp
-from torchmetrics import MeanAbsoluteError, MeanSquaredError, MetricCollection
 from torch.optim import *
 from tqdm import tqdm
 from torch_timeseries.utils.model_stats import count_parameters
 from torch_timeseries.utils.reproduce import reproducible
 import time
-import torch.multiprocessing as mp
-from torch_timeseries.utils.parse_type import parse_type
 from torch_timeseries.utils.early_stop import EarlyStopping
-import yaml
 import numpy as np
 import setproctitle
 try:

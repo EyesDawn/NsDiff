@@ -50,7 +50,7 @@ GPU_ID=0
 export CUDA_VISIBLE_DEVICES=${GPU_ID}
 DEVICE="cuda:0"
 
-SEEDS='[2220]'
+SEEDS='[2222]'
 CHECKPOINTS="./results/runs/iTransformer/"
 ITR=1
 
@@ -113,7 +113,7 @@ echo "Stage 3: Training Velocity Network"
 echo "============================================================================"
 echo ""
 
-STAGE3_WANDB_PROJECT="iReflow-Stage3-Velocity"
+STAGE3_WANDB_PROJECT="iReflow-Stage3-Velocity-revin"
 STAGE3_CHECKPOINTS="./results/runs/iTransformer/"
 STAGE3_LR=0.0001
 

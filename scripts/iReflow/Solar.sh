@@ -32,11 +32,11 @@ USE_ITRANSFORMER_ENC=True
 IS_TRAINING=1
 BATCH_SIZE=32
 EPOCHS=20
-PATIENCE=6
+PATIENCE=20
 LR_PATIENCE=1
 
 # Flow配置
-NUM_SAMPLING_STEPS=5
+NUM_SAMPLING_STEPS=20
 TEMPERATURE=1.0
 NUM_SAMPLES=100
 
@@ -148,9 +148,6 @@ python3 -u ./src/experiments/iReflow.py \
     --num_sampling_steps ${NUM_SAMPLING_STEPS} \
     --temperature ${TEMPERATURE} \
     --num_samples ${NUM_SAMPLES} \
-    --nll_loss_weight ${NLL_LOSS_WEIGHT} \
-    --velocity_loss_weight ${VELOCITY_LOSS_WEIGHT} \
-    --log_sigma_stats ${LOG_SIGMA_STATS} \
     --device ${DEVICE} \
     --use_relative_space ${USE_RELATIVE_SPACE} \
     --use_itransformer_enc ${USE_ITRANSFORMER_ENC} \

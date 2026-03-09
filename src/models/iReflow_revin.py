@@ -114,11 +114,19 @@ class iReflow(nn.Module):
         # Stage 4: 计算损失
         velocity_loss = F.mse_loss(v_pred, v_target)
 
+        # Diagnostic 2: enc_features effectiveness check
+        # Compare prediction with zeroed enc_features to measure conditioning contribution
+        with torch.no_grad():
+            enc_features_zero = torch.zeros_like(enc_features)
+            v_zero = self.velocity_net(X_tau, tau.squeeze(), enc_features_zero, mu_X, sigma_X)
+            enc_features_diff = (v_pred - v_zero).abs().mean()
+
         loss_dict = {
             'velocity_loss': velocity_loss.item(),
             'mean_sigma_X': sigma_X.mean().item(),
             'min_sigma_X': sigma_X.min().item(),
             'max_sigma_X': sigma_X.max().item(),
+            'enc_features_diff': enc_features_diff.item(),  # Diagnostic metric
         }
 
         return velocity_loss, loss_dict

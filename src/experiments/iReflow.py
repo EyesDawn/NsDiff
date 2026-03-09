@@ -458,6 +458,95 @@ class iReflowExp(ProbForecastExp):
             result.update({f"sigma_{k}": float(v / sigma_counts) for k, v in sigma_sums.items()})
         return result
     
+    def _diagnose_sample_diversity(self, n_diag_samples: int = 30) -> dict:
+        """
+        Diagnostic 1: Sample Collapse Detection.
+
+        Generates `n_diag_samples` predictions for the first validation batch and
+        measures inter-sample variance.  If the variance is close to zero the
+        velocity network has learned to cancel epsilon without conditioning on
+        enc_features, causing all samples to collapse to the same point.
+
+        Key metrics
+        -----------
+        inter_sample_var
+            Mean variance across the sample dimension [B, n, P, D] → scalar.
+            Expected source variance  ≈  sigma_X².
+            collapse_ratio = inter_sample_var / sigma_X²:
+              ~0  →  full collapse (samples identical, diversity lost)
+              ~1  →  diverse samples (source spread is preserved)
+              >1  →  samples more spread than source (unlikely with well-trained net)
+
+        dist_sample_mean_to_mu_X
+            MAE between the mean prediction and the RevIN historical mean μ_X.
+            A near-zero value means the network predicts the historical mean
+            unconditionally (ignores enc_features conditioning).
+
+        dist_sample_mean_to_truth
+            MAE between the mean prediction and the ground-truth future.
+            Indicates point-prediction quality independent of sample diversity.
+
+        Returns
+        -------
+        dict with keys: collapse_ratio, inter_sample_var, source_var,
+                        dist_sample_mean_to_mu_X, dist_sample_mean_to_truth
+        """
+        self.model.eval()
+        with torch.no_grad():
+            # ── grab the first validation batch only ──────────────────────────
+            batch = next(iter(self.val_loader))
+            batch_x          = batch[0].to(self.device).float()
+            batch_y          = batch[1].to(self.device).float()
+            batch_x_date_enc = batch[4].to(self.device).float()
+
+            # ── generate n_diag_samples predictions for the SAME input ────────
+            # samples: [B, n_diag_samples, P, D]
+            # mu_X:    [B, 1, D]   sigma_X: [B, 1, D]
+            samples, mu_X, sigma_X = self.model.sample(
+                x_enc=batch_x,
+                x_mark_enc=batch_x_date_enc,
+                num_samples=n_diag_samples,
+                temperature=self.temperature,
+            )
+
+            # ── inter-sample variance (across the sample dimension) ────────────
+            # var over dim=1 → [B, P, D], then mean to scalar
+            inter_sample_var = samples.var(dim=1).mean().item()
+
+            # expected source variance: E[sigma_X²]
+            source_var = (sigma_X ** 2).mean().item()
+
+            # collapse ratio: 0 = fully collapsed, 1 = source-level diversity
+            collapse_ratio = inter_sample_var / (source_var + 1e-8)
+
+            # ── mean prediction vs μ_X and ground truth ───────────────────────
+            sample_mean = samples.mean(dim=1)                        # [B, P, D]
+            mu_X_exp    = mu_X.expand_as(sample_mean)               # [B, P, D]
+
+            dist_to_mu_X = (sample_mean - mu_X_exp).abs().mean().item()
+            dist_to_truth = (sample_mean - batch_y).abs().mean().item()
+
+        # ── print diagnostics ─────────────────────────────────────────────────
+        self._run_print("=" * 64)
+        self._run_print("[Diag-1] Sample Diversity (Collapse) Analysis")
+        self._run_print(f"  n_diag_samples              : {n_diag_samples}")
+        self._run_print(f"  inter-sample variance       : {inter_sample_var:.6f}")
+        self._run_print(f"  source variance (sigma_X²)  : {source_var:.6f}")
+        self._run_print(f"  collapse ratio              : {collapse_ratio:.4f}"
+                        f"  (≈0 → collapsed | ≈1 → diverse)")
+        self._run_print(f"  |sample_mean - mu_X|  (MAE) : {dist_to_mu_X:.6f}"
+                        f"  (≈0 → predicts historical mean unconditionally)")
+        self._run_print(f"  |sample_mean - truth| (MAE) : {dist_to_truth:.6f}")
+        self._run_print("=" * 64)
+
+        return {
+            "diag_collapse_ratio":              collapse_ratio,
+            "diag_inter_sample_var":            inter_sample_var,
+            "diag_source_var":                  source_var,
+            "diag_dist_sample_mean_to_mu_X":    dist_to_mu_X,
+            "diag_dist_sample_mean_to_truth":   dist_to_truth,
+        }
+
     def _val(self):
         """验证：使用较少的样本数以加快验证速度"""
         # 设置验证时使用的样本数
@@ -501,6 +590,21 @@ class iReflowExp(ProbForecastExp):
         for key, values in val_metrics.items():
             if values:
                 result[key] = np.mean(values)
+
+        # ── Diagnostic 1: sample collapse detection ───────────────────────────
+        diag = self._diagnose_sample_diversity(n_diag_samples=30)
+        result.update(diag)
+        
+        # ── Diagnostic 2: enc_features effectiveness ─────────────────────────
+        if 'enc_features_diff' in result:
+            enc_diff = result['enc_features_diff']
+            self._run_print("=" * 64)
+            self._run_print("[Diag-2] Encoder Features Effectiveness")
+            self._run_print(f"  |v_pred - v_zero| (MAE) : {enc_diff:.6f}")
+            self._run_print(f"  Interpretation:")
+            self._run_print(f"    ≈ 0 → enc_features ignored (cross-attention ineffective)")
+            self._run_print(f"    > 0 → enc_features contribute to velocity prediction")
+            self._run_print("=" * 64)
         
         # 清理标志
         delattr(self, '_num_samples_for_eval')

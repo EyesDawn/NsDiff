@@ -25,7 +25,7 @@ E_LAYERS=4
 FLOW_LAYERS=3
 D_FF=512
 DROPOUT=0.1
-USE_RELATIVE_SPACE=False
+USE_RELATIVE_SPACE=True
 
 # 训练配置
 IS_TRAINING=1
@@ -45,7 +45,7 @@ PRED_LEN=192
 HORIZON=1
 
 # 设备配置
-GPU_ID=0
+GPU_ID=1
 export CUDA_VISIBLE_DEVICES=${GPU_ID}
 DEVICE="cuda:0"
 
@@ -61,7 +61,7 @@ ITR=1
 # echo "============================================================================"
 # echo ""
 
-# STAGE2_WANDB_PROJECT="iReflow-Stage2-Uncertainty"
+# STAGE2_WANDB_PROJECT="iReflow-Stage2-Uncertainty-ljl"
 # STAGE2_CHECKPOINTS="./results/runs/iTransformer/"
 
 # python3 -u ./src/experiments/pretrain_uncertainty_estimator.py \
@@ -111,11 +111,11 @@ echo "Stage 3: Training Velocity Network"
 echo "============================================================================"
 echo ""
 
-STAGE3_WANDB_PROJECT="iReflow-Stage3-Velocity-revin"
+STAGE3_WANDB_PROJECT="iReflow-Stage3-Velocity-ljl"
 STAGE3_CHECKPOINTS="./results/runs/iTransformer/"
 STAGE3_LR=0.0005
 
-python3 -u ./src/experiments/iReflow.py \
+CUDA_LAUNCH_BLOCKING=1 python3 -u ./src/experiments/iReflow.py \
     --wandb_project ${STAGE3_WANDB_PROJECT} \
     --is_training 1 \
     --root_path ${ROOT_PATH} \

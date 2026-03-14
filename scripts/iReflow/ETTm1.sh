@@ -25,11 +25,11 @@ E_LAYERS=2
 FLOW_LAYERS=3
 D_FF=128
 DROPOUT=0.1
-USE_RELATIVE_SPACE=False
+USE_RELATIVE_SPACE=True
 
 # 训练配置
 IS_TRAINING=1
-BATCH_SIZE=32
+BATCH_SIZE=4
 LEARNING_RATE=0.0001
 EPOCHS=20
 PATIENCE=6
@@ -67,7 +67,6 @@ ITR=1
 # STAGE2_LR=0.0001
 
 # python3 -u ./src/experiments/pretrain_uncertainty_estimator.py \
-#     --wandb_project ${STAGE2_WANDB_PROJECT} \
 #     --is_training 1 \
 #     --root_path ${ROOT_PATH} \
 #     --data_path ${DATA_PATH} \
@@ -113,13 +112,12 @@ echo "Stage 3: Training Velocity Network"
 echo "============================================================================"
 echo ""
 
-STAGE3_WANDB_PROJECT="iReflow-Stage3-Velocity-revin"
+STAGE3_WANDB_PROJECT="iReflow-Stage3-Velocity-ljl"
 STAGE3_CHECKPOINTS="./results/runs/iTransformer/"
 STAGE3_LR=0.0001
 
 python3 -u ./src/experiments/iReflow.py \
-    --wandb_project ${STAGE3_WANDB_PROJECT} \
-    --is_training 1 \
+    --is_training 0 \
     --root_path ${ROOT_PATH} \
     --data_path ${DATA_PATH} \
     --model_id ${MODEL_ID} \

@@ -8,7 +8,7 @@ import os
 import torch
 from dataclasses import dataclass, asdict, field
 import argparse
-from src.models.iReflow_revin import iReflow
+from src.models.iReflow import iReflow
 from src.experiments.prob_forecast import ProbForecastExp
 from torch.optim import *
 from tqdm import tqdm
@@ -359,7 +359,7 @@ class iReflowExp(ProbForecastExp):
         
         return preds, truths
 
-    def _evaluate(self, dataloader):
+    def _evaluate(self, dataloader, plot=False):
         """
         重写评估逻辑：
         - 保持父类的采样型概率指标（CRPS/QICE/PICP/...）
@@ -394,7 +394,7 @@ class iReflowExp(ProbForecastExp):
 
         with tqdm(total=len(dataloader.dataset)) as progress_bar:
             with torch.no_grad():
-                for batch_x, batch_y, origin_x, origin_y, batch_x_date_enc, batch_y_date_enc in dataloader:
+                for i, (batch_x, batch_y, origin_x, origin_y, batch_x_date_enc, batch_y_date_enc) in enumerate(dataloader):
                     batch_x = batch_x.to(self.device).float()
                     batch_y = batch_y.to(self.device).float()
                     origin_y = origin_y.to(self.device).float()
@@ -435,6 +435,19 @@ class iReflowExp(ProbForecastExp):
                             continue
                         sigma_sums[k] = sigma_sums.get(k, 0.0) + float(v)
                     sigma_counts += 1
+
+                    if plot:
+                        voutput = preds.permute(0,3,1,2).detach().cpu().numpy()
+                        true = truths.detach().cpu().numpy()
+                        vx = batch_x.detach().cpu().numpy()[0, :, -1]
+
+                        vtrue = np.concatenate((vx, true[0, :, -1]))
+                        data = voutput[0,:,:,-1]
+                        prob_visual(data, vtrue, name=os.path.join(os.path.join('./plot_results', self.dataset_type), str(i) + '.pdf'))
+
+                        sigma = sigma.detach().cpu().numpy()
+                        vsigma = sigma[0,:,-1]
+                        std_visual(vx, true[0, :, -1], vsigma, name=os.path.join(os.path.join('./plot_results', self.dataset_type), str(i) + '_std' + '.pdf'))
 
                     progress_bar.update(batch_x.shape[0])
 
@@ -865,7 +878,6 @@ class iReflowExp(ProbForecastExp):
         self.current_seed = seed
         # 生成 setting 字符串（用于 checkpoints 路径）
         setting = self._get_setting(seed)
-        
         # 模式 0: 只测试，不训练
         if self.is_training == 0:
             print('>>>>>>>testing (no training) : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
@@ -1143,6 +1155,88 @@ class iReflowExp(ProbForecastExp):
         
         return test_results
 
+
+import matplotlib.pyplot as plt
+
+def prob_visual(data, true, pred=None, random_int=None, name='./pic/test.pdf'):
+    plt.figure(figsize=(12,7))
+    plt.grid(True) 
+    pred = np.mean(data, axis=0)
+    plt.plot(np.arange(192)+96, pred, label='Mean Prediction', linewidth=1.5, color='darkblue')
+    # plt.plot(data_mean, label='DiffMean', linewidth=1.5, color='green')
+    plt.plot(true, label='GroundTruth', linewidth=2., color='#9D2121')    
+    # plt.fill_between(np.arange(len(up))+96, down, up, color="green", alpha=0.2, label="Uncertainty Range")
+    percentiles = np.percentile(data, q=[2.5, 25, 75, 97.5], axis=0)
+    plt.fill_between(np.arange(192)+96, percentiles[0], percentiles[3], color="#1f77b4", alpha=0.2, label="95% range")
+    plt.fill_between(np.arange(192)+96, percentiles[1], percentiles[2], color="#0F4A74", alpha=0.2, label="50% Range")
+    # for i in range(len(random_int)):
+    #     plt.axvline(x = random_int[i] + 96, color="grey", linestyle="--", linewidth=1)
+    # plt.ylim(-2.2, 0.5) # ETTh1
+    # plt.ylim(-1.8, 0.) # ETTm1
+    # plt.ylim(-4, 7.0) #traffic
+    # plt.ylim(-8.0, 7.5)
+    
+    plt.legend()
+    plt.savefig(name, bbox_inches='tight')
+    plt.close()
+
+def std_visual(batch_x, batch_y, pred_std, name='./pic/test.pdf'):
+    plt.figure(figsize=(12,7))
+    # plt.grid(True) 
+    x_std = np.std(batch_x)                  # 标量
+    x_std = np.full(192, x_std, dtype=float)
+    _,_,y_std = DDN(batch_y, 7)
+    plt.subplot(2,1,1)
+    plt.plot(batch_y, label='GroundTruth', linewidth=2., color='#9D2121')    
+    plt.subplot(2,1,2)
+    # print(pred_std.shape)
+    # print(x_std.shape)
+    # print(y_std.shape)
+    # assert 0
+    plt.plot(pred_std, linewidth=1.5, color='darkblue', label='pred')
+    plt.plot(x_std, linewidth=1.5, color='darkgreen', label='revin')
+    plt.plot(y_std, linewidth=1.5, color='yellow', label='sliding')
+
+    plt.legend()
+    plt.savefig(name, bbox_inches='tight')
+    plt.close()
+
+# import numpy as np
+# import matplotlib.pyplot as plt
+
+# def std_visual(batch_x, batch_y, pred_std, name='./pic/test.pdf'):
+#     fig, axes = plt.subplots(2, 1, figsize=(12, 7))
+
+#     # 计算输入序列整体标准差，并扩展到与 batch_y 同长度
+#     x_std = np.std(batch_x)
+#     x_std = np.full_like(batch_y, x_std, dtype=float)
+
+#     y_std = DDN(batch_y, 7)
+
+#     # 上图
+#     axes[0].plot(batch_y, label='GroundTruth', linewidth=2.0, color='#9D2121')
+#     axes[0].grid(True)
+#     axes[0].legend()
+
+#     # 下图
+#     axes[1].plot(pred_std, label='Pred Std', linewidth=1.5, color='darkblue')
+#     axes[1].plot(x_std, label='Input Std', linewidth=1.5, color='darkgreen')
+#     axes[1].plot(y_std, label='Target Std', linewidth=1.5, color='yellow')
+#     axes[1].grid(True)
+#     axes[1].legend()
+
+#     plt.tight_layout()
+#     plt.savefig(name, bbox_inches='tight')
+#     plt.close()
+
+def DDN(data, kernel):
+    x = torch.tensor(data)
+    x_window = x.unfold(-1, kernel, 1)
+    m, s = x_window.mean(dim=-1).numpy(), x_window.std(dim=-1).numpy()
+    m, s = np.pad(m, (kernel//2,kernel//2), mode='edge'), np.pad(s, (kernel//2,kernel//2), mode='edge')
+    data = (data - m) / (s + 1e-5)
+    return data, m, s
+    
 
 if __name__ == '__main__':
     setproctitle.setproctitle('iReflow_main')

@@ -231,7 +231,7 @@ class UncertaintyEstimatorPretrainExp(iReflowExp):
         delattr(self, '_num_samples_for_eval')
         return result
     
-    def _evaluate(self, dataloader):
+    def _evaluate(self, dataloader, plot=False):
         """
         Stage 2 专用评估逻辑（方案 A）：
         

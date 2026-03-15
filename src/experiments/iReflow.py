@@ -8,7 +8,7 @@ import os
 import torch
 from dataclasses import dataclass, asdict, field
 import argparse
-from src.models.iReflow_revin import iReflow
+from src.models.iReflow import iReflow
 from src.experiments.prob_forecast import ProbForecastExp
 from torch.optim import *
 from tqdm import tqdm

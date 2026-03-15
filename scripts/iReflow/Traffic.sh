@@ -32,11 +32,11 @@ USE_ITRANSFORMER_ENC=True
 IS_TRAINING=1
 BATCH_SIZE=16
 EPOCHS=20
-PATIENCE=20
+PATIENCE=10
 LR_PATIENCE=1
 
 # Flow配置
-NUM_SAMPLING_STEPS=20
+NUM_SAMPLING_STEPS=5
 TEMPERATURE=1.0
 NUM_SAMPLES=100
 
@@ -112,7 +112,7 @@ echo "Stage 3: Training Velocity Network"
 echo "============================================================================"
 echo ""
 
-STAGE3_WANDB_PROJECT="iReflow-Stage3-Velocity-revin"
+STAGE3_WANDB_PROJECT="iReflow-Stage3-Velocity-mlp"
 STAGE3_CHECKPOINTS="./results/runs/iTransformer/"
 STAGE3_LR=0.0005
 

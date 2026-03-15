@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from src.models.iTransformer import Model as iTransformer
-from src.nn.velocity_network import VelocityNetwork
+from src.nn.velocity_network_mlp import VelocityNetworkMLP as VelocityNetwork
 
 
 class iReflow(nn.Module):
@@ -196,14 +196,28 @@ class iReflow(nn.Module):
         
         # Stage 4: 计算损失
         # Velocity Loss: 预测速度场与真实速度场的差异
-        # 使用MSE Loss（可以尝试Huber Loss以提高鲁棒性）
-        velocity_loss = F.mse_loss(v_pred, v_target)
+        # 注意：网络输入是相对空间 z_tau = (X_tau - y_hat) / sigma，
+        # 为保持一致性，Loss 也在相对空间中计算（除以 sigma 做归一化）：
+        #   L_relative = || (v_pred - v_target) / sigma ||^2
+        # 这等价于对绝对空间误差按不确定性做加权，
+        # 避免 sigma 大的维度在 Loss 中获得 sigma^2 的隐式权重。
+        if self.velocity_net.use_relative_space:
+            velocity_loss = F.mse_loss(v_pred / sigma_flow, v_target / sigma_flow)
+        else:
+            velocity_loss = F.mse_loss(v_pred, v_target)
         
+        # Diagnostic 2: enc_features effectiveness check
+        # Compare prediction with zeroed enc_features to measure conditioning contribution
+        with torch.no_grad():
+            enc_features_zero = torch.zeros_like(enc_features)
+            v_zero = self.velocity_net(X_tau, tau.squeeze(), enc_features_zero, y_hat_flow, sigma_flow)
+            enc_features_diff = (v_pred - v_zero).abs().mean()
+
         # total_loss = self.nll_loss_weight * nll_loss + self.velocity_loss_weight * velocity_loss
-        total_loss = velocity_loss
+        # total_loss = velocity_loss
 
         loss_dict = {
-            'total_loss': total_loss.item(),
+            # 'total_loss': total_loss.item(),
             'velocity_loss': velocity_loss.item(),
             # 'nll_loss': nll_loss.item(),
             # 'nll_loss_weight': self.nll_loss_weight,
@@ -211,18 +225,11 @@ class iReflow(nn.Module):
             'mean_sigma': sigma.mean().item(),
             'min_sigma': sigma.min().item(),
             'max_sigma': sigma.max().item(),
-            'mae_point': F.l1_loss(y_hat, y_gt).item()
+            'mae_point': F.l1_loss(y_hat, y_gt).item(),
+            'enc_features_diff': enc_features_diff.item(),  # Diagnostic metric
         }
-
-        # 记录 gate 的均值/方差（来自 VelocityNetwork.confidence_gate）
-        gate_mean = getattr(self.velocity_net, "last_gate_mean", None)
-        gate_var = getattr(self.velocity_net, "last_gate_var", None)
-        if gate_mean is not None:
-            loss_dict["gate_mean"] = float(gate_mean)
-        if gate_var is not None:
-            loss_dict["gate_var"] = float(gate_var)
         
-        return total_loss, loss_dict
+        return velocity_loss, loss_dict
     
     @torch.no_grad()
     def sample(self, x_enc, x_mark_enc, num_samples=1, temperature=1.0):

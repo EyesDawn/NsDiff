@@ -38,12 +38,32 @@ export CUDA_DEVICE_ORDER=PCI_BUS_ID
 #     --save_path ./results/analysis/electricity_residuals.npz \
 #     --use_origin_scale False
 
-#  python3 -u ./src/analysis/residual_histogram.py \
-    # --npz_path ./results/analysis/electricity_residuals.npz \
-    # --output_path ./results/analysis/electricity_residual_hist.png \
-    # --clip_min -6 --clip_max 6
+# python3 -u ./src/analysis/residual_histogram.py \
+#     --npz_path ./results/analysis/electricity_residuals.npz \
+#     --output_path ./results/analysis/electricity_residual_hist.png \
+#     --clip_min -6 --clip_max 6
 
-python3 -u ./src/analysis/residual_wasserstein.py \
-    --npz_path ./results/analysis/electricity_residuals_fast.npz \
-    --output_json ./results/analysis/electricity_residuals_wasserstein.json \
-    --clip_min -6 --clip_max 6
+# python3 -u ./src/analysis/residual_wasserstein.py \
+#     --npz_path ./results/analysis/electricity_residuals_fast.npz \
+#     --output_json ./results/analysis/electricity_residuals_wasserstein.json \
+#     --clip_min -6 --clip_max 6
+
+# ── PDN 归一化前后概率密度分布对比 ─────────────────────────────────────────────
+# 整体图（[N, P, D] 全部展平）+ 特征维度 grid 图（自动选最多 12 个均匀分布维度）
+python3 -u ./src/analysis/pdn_density_plot.py \
+    --npz_path  ./results/analysis/electricity_residuals_fast.npz \
+    --output_dir ./results/analysis \
+    --prefix    electricity \
+    --zpdn_clip_min -6 --zpdn_clip_max 6 \
+    --bins 120 \
+    --n_cols 3
+
+# 若需指定特定特征维度（例如 0 1 2 10 50 100），可加 --feature_dims 参数：
+# python3 -u ./src/analysis/pdn_density_plot.py \
+#     --npz_path  ./results/analysis/electricity_residuals.npz \
+#     --output_dir ./results/analysis \
+#     --prefix    electricity \
+#     --zpdn_clip_min -6 --zpdn_clip_max 6 \
+#     --bins 120 \
+#     --n_cols 3 \
+#     --feature_dims 0 1 2 10 50 100 200

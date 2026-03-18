@@ -35,8 +35,8 @@ export CUDA_DEVICE_ORDER=PCI_BUS_ID
 #     --device cuda:0 \
 #     --use_relative_space True \
 #     --seed 2222 \
-#     --save_path ./results/analysis/electricity_residuals.npz \
-#     --use_origin_scale False
+#     --save_path ./results/analysis/electricity_residuals_origin.npz \
+#     --use_origin_scale True
 
 # python3 -u ./src/analysis/residual_histogram.py \
 #     --npz_path ./results/analysis/electricity_residuals.npz \
@@ -50,20 +50,25 @@ export CUDA_DEVICE_ORDER=PCI_BUS_ID
 
 # ── PDN 归一化前后概率密度分布对比 ─────────────────────────────────────────────
 # 整体图（[N, P, D] 全部展平）+ 特征维度 grid 图（自动选最多 12 个均匀分布维度）
-python3 -u ./src/analysis/pdn_density_plot.py \
-    --npz_path  ./results/analysis/electricity_residuals_fast.npz \
-    --output_dir ./results/analysis \
-    --prefix    electricity \
-    --zpdn_clip_min -6 --zpdn_clip_max 6 \
-    --bins 120 \
-    --n_cols 3
-
-# 若需指定特定特征维度（例如 0 1 2 10 50 100），可加 --feature_dims 参数：
 # python3 -u ./src/analysis/pdn_density_plot.py \
-#     --npz_path  ./results/analysis/electricity_residuals.npz \
+#     --npz_path  ./results/analysis/electricity_residuals_fast.npz \
 #     --output_dir ./results/analysis \
 #     --prefix    electricity \
 #     --zpdn_clip_min -6 --zpdn_clip_max 6 \
 #     --bins 120 \
 #     --n_cols 3 \
-#     --feature_dims 0 1 2 10 50 100 200
+#     --skip_overall
+
+# 若需指定特定特征维度（例如 0 1 2 10 50 100），可加 --feature_dims 参数：
+python3 -u ./src/analysis/pdn_density_plot.py \
+    --npz_path  ./results/analysis/electricity_residuals_origin.npz \
+    --output_dir ./results/analysis \
+    --prefix    electricity_S0_origin \
+    --no_clip \
+    --bins 120 \
+    --separate_per_feature \
+    --sample_n_overall 10 \
+    --sample_n_per_feature 10 \
+    --kde_max_points 200000 \
+    --seed 0 \
+    --skip_overall

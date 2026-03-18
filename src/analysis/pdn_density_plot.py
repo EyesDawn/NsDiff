@@ -55,6 +55,45 @@ def _flatten(arr: np.ndarray, clip_range: Optional[Tuple[float, float]] = None) 
     return flat
 
 
+def _subsample_1d(
+    x: np.ndarray,
+    max_points: Optional[int],
+    rng: Optional[np.random.Generator] = None,
+) -> np.ndarray:
+    """对 1D 数组做无放回下采样（用于限制 KDE 计算量）。"""
+    if max_points is None:
+        return x
+    if max_points <= 0:
+        return x
+    if x.size <= max_points:
+        return x
+    if rng is None:
+        rng = np.random.default_rng(0)
+    idx = rng.choice(x.size, size=max_points, replace=False)
+    return x[idx]
+
+
+def _maybe_subsample_N(
+    Y: np.ndarray,
+    Z_PDN: np.ndarray,
+    sample_n: Optional[int],
+    rng: np.random.Generator,
+    tag: str,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """按 N 维对 [N,P,D] 做无放回抽样，降低整体绘图规模。"""
+    if sample_n is None:
+        return Y, Z_PDN
+    if sample_n <= 0:
+        return Y, Z_PDN
+    N = Y.shape[0]
+    k = min(int(sample_n), N)
+    if k == N:
+        return Y, Z_PDN
+    idx = rng.choice(N, size=k, replace=False)
+    print(f"[Sampling:{tag}] N {N} -> {k}")
+    return Y[idx], Z_PDN[idx]
+
+
 def _plot_single_on_ax(
     ax: plt.Axes,
     data: np.ndarray,
@@ -65,6 +104,8 @@ def _plot_single_on_ax(
     add_normal_ref: bool = True,
     title: str = "",
     show_stats: bool = True,
+    kde_max_points: Optional[int] = None,
+    rng: Optional[np.random.Generator] = None,
 ) -> None:
     """
     在给定 Axes 上绘制**单条**分布的密度图（直方图 + KDE），附上标准正态参考曲线（可选）。
@@ -100,7 +141,8 @@ def _plot_single_on_ax(
 
     if _HAS_SCIPY and flat.size > 1:
         try:
-            kde = gaussian_kde(flat, bw_method="scott")
+            flat_kde = _subsample_1d(flat, kde_max_points, rng=rng)
+            kde = gaussian_kde(flat_kde, bw_method="scott")
             ax.plot(xs, kde(xs), color=color, linewidth=1.8, linestyle="-")
         except Exception:
             pass
@@ -110,19 +152,19 @@ def _plot_single_on_ax(
         ax.plot(xs, ys_norm, "k--", linewidth=1.6, label=r"$\mathcal{N}(0,1)$")
 
     ax.set_xlim(xmin, xmax)
-    ax.set_xlabel("Value", fontsize=9)
-    ax.set_ylabel("Density", fontsize=9)
-    ax.legend(fontsize=7, loc="upper right")
+    ax.set_xlabel("Value", fontsize=14)
+    ax.set_ylabel("Density", fontsize=14)
+    ax.legend(fontsize=14, loc="upper right")
     ax.grid(True, linestyle="--", alpha=0.30)
     if title:
-        ax.set_title(title, fontsize=9)
+        ax.set_title(title, fontsize=14)
 
     if show_stats:
         stats_text = f"μ={flat.mean():.3f}, σ={flat.std():.3f}"
         ax.text(
             0.02, 0.97, stats_text,
             transform=ax.transAxes,
-            fontsize=7,
+            fontsize=14,
             verticalalignment="top",
             bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.6),
         )
@@ -139,6 +181,8 @@ def _plot_density_on_ax(
     add_normal_ref: bool = True,
     title: str = "",
     show_stats: bool = True,
+    kde_max_points: Optional[int] = None,
+    rng: Optional[np.random.Generator] = None,
 ) -> None:
     """
     在给定 Axes 上叠加绘制 data_before 与 data_after 的密度分布，
@@ -186,13 +230,15 @@ def _plot_density_on_ax(
     # KDE 曲线（若有 scipy）
     if _HAS_SCIPY and b.size > 1:
         try:
-            kde_b = gaussian_kde(b, bw_method="scott")
+            b_kde = _subsample_1d(b, kde_max_points, rng=rng)
+            kde_b = gaussian_kde(b_kde, bw_method="scott")
             ax.plot(xs, kde_b(xs), color="tab:orange", linewidth=1.8, linestyle="-")
         except Exception:
             pass
     if _HAS_SCIPY and a.size > 1:
         try:
-            kde_a = gaussian_kde(a, bw_method="scott")
+            a_kde = _subsample_1d(a, kde_max_points, rng=rng)
+            kde_a = gaussian_kde(a_kde, bw_method="scott")
             ax.plot(xs, kde_a(xs), color="tab:blue", linewidth=1.8, linestyle="-")
         except Exception:
             pass
@@ -204,12 +250,12 @@ def _plot_density_on_ax(
                 label=r"$\mathcal{N}(0,1)$")
 
     ax.set_xlim(xmin, xmax)
-    ax.set_xlabel("Value", fontsize=9)
-    ax.set_ylabel("Density", fontsize=9)
-    ax.legend(fontsize=7, loc="upper right")
+    ax.set_xlabel("Value", fontsize=14)
+    ax.set_ylabel("Density", fontsize=14)
+    ax.legend(fontsize=14, loc="upper right")
     ax.grid(True, linestyle="--", alpha=0.30)
     if title:
-        ax.set_title(title, fontsize=9)
+        ax.set_title(title, fontsize=14)
 
     # 标注统计量（均值 ± 标准差）
     if show_stats:
@@ -220,7 +266,7 @@ def _plot_density_on_ax(
         ax.text(
             0.02, 0.97, stats_text,
             transform=ax.transAxes,
-            fontsize=6.5,
+            fontsize=14,
             verticalalignment="top",
             bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.6),
         )
@@ -237,6 +283,8 @@ def plot_overall(
     clip_range: Optional[Tuple[float, float]],
     bins: int,
     show_stats: bool = True,
+    kde_max_points: Optional[int] = None,
+    rng: Optional[np.random.Generator] = None,
 ) -> None:
     """
     绘制整体密度分布对比图（将 [N, P, D] 全部展平后对比）。
@@ -250,7 +298,7 @@ def plot_overall(
         show_stats : 是否在图内标注统计量。
     """
     plt.close("all")
-    fig, ax = plt.subplots(figsize=(9, 5), dpi=300)
+    fig, ax = plt.subplots(figsize=(9, 5), dpi=600)
 
     _plot_density_on_ax(
         ax=ax,
@@ -263,6 +311,8 @@ def plot_overall(
         add_normal_ref=True,
         title=f"Overall Density: Y vs $Z_{{\\rm PDN}}$  [N={Y.shape[0]}, P={Y.shape[1]}, D={Y.shape[2]}]",
         show_stats=show_stats,
+        kde_max_points=kde_max_points,
+        rng=rng,
     )
 
     fig.tight_layout()
@@ -291,7 +341,7 @@ def _build_grid_fig(
     """创建 grid 画布，返回 (fig, gs, n_rows, n_cols_actual)。"""
     n_cols = min(n_cols, n_plots)
     n_rows = (n_plots + n_cols - 1) // n_cols
-    fig = plt.figure(figsize=(n_cols * 4.5, n_rows * 3.8), dpi=200)
+    fig = plt.figure(figsize=(n_cols * 4.5, n_rows * 3.8), dpi=600)
     gs = gridspec.GridSpec(n_rows, n_cols, figure=fig, hspace=0.55, wspace=0.35)
     return fig, gs, n_rows, n_cols
 
@@ -318,6 +368,8 @@ def plot_per_feature(
     feature_dims: Optional[List[int]],
     n_cols: int,
     show_stats: bool = True,
+    kde_max_points: Optional[int] = None,
+    rng: Optional[np.random.Generator] = None,
 ) -> None:
     """
     对指定的特征维度分别绘制 Y 与 Z_PDN **叠加**的密度对比图，合并为一张 grid 图。
@@ -354,6 +406,8 @@ def plot_per_feature(
             add_normal_ref=True,
             title=f"Feature dim = {d}",
             show_stats=show_stats,
+            kde_max_points=kde_max_points,
+            rng=rng,
         )
 
     _hide_extra_subplots(fig, gs, n_plots, n_rows, n_cols)
@@ -375,6 +429,8 @@ def plot_per_feature_separate(
     feature_dims: Optional[List[int]],
     n_cols: int,
     show_stats: bool = True,
+    kde_max_points: Optional[int] = None,
+    rng: Optional[np.random.Generator] = None,
 ) -> None:
     """
     对指定的特征维度，分别将 Y 与 Z_PDN **各自独立**绘制成一张 grid 图。
@@ -423,6 +479,8 @@ def plot_per_feature_separate(
                 add_normal_ref=True,
                 title=f"Feature dim = {d}",
                 show_stats=show_stats,
+                kde_max_points=kde_max_points,
+                rng=rng,
             )
 
         _hide_extra_subplots(fig, gs, n_plots, n_rows, nc)
@@ -514,6 +572,38 @@ def main() -> None:
         help="Number of histogram bins.",
     )
     parser.add_argument(
+        "--sample_n_overall",
+        type=int,
+        default=None,
+        help=(
+            "If set, randomly subsample along N dimension before plotting the overall figure. "
+            "Greatly reduces runtime for huge .npz."
+        ),
+    )
+    parser.add_argument(
+        "--sample_n_per_feature",
+        type=int,
+        default=None,
+        help=(
+            "If set, randomly subsample along N dimension before plotting per-feature figures."
+        ),
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Random seed for subsampling (reproducible plots).",
+    )
+    parser.add_argument(
+        "--kde_max_points",
+        type=int,
+        default=200000,
+        help=(
+            "Max number of 1D points used for KDE. If flattened data exceeds this, KDE "
+            "will be computed on a random subset to keep runtime manageable."
+        ),
+    )
+    parser.add_argument(
         "--feature_dims",
         type=int,
         nargs="+",
@@ -558,6 +648,7 @@ def main() -> None:
     args = parser.parse_args()
 
     show_stats: bool = not args.no_stats
+    rng = np.random.default_rng(args.seed)
 
     # ---- 加载数据 ----
     print(f"Loading: {args.npz_path}")
@@ -577,6 +668,12 @@ def main() -> None:
     )
     N, P, D = Y.shape
     print(f"Data shape: N={N}, P={P}, D={D}")
+    if args.sample_n_overall is not None:
+        print(f"sample_n_overall={args.sample_n_overall} (seed={args.seed})")
+    if args.sample_n_per_feature is not None:
+        print(f"sample_n_per_feature={args.sample_n_per_feature} (seed={args.seed})")
+    if args.kde_max_points is not None:
+        print(f"kde_max_points={args.kde_max_points}")
 
     # ---- 确定截断区间 ----
     if args.no_clip:
@@ -592,25 +689,33 @@ def main() -> None:
 
     # ---- 整体图 ----
     if not args.skip_overall:
+        Y_overall, Z_overall = _maybe_subsample_N(
+            Y, Z_PDN, args.sample_n_overall, rng=rng, tag="overall"
+        )
         overall_path = os.path.join(
             args.output_dir, f"{args.prefix}_pdn_density_overall.png"
         )
         plot_overall(
-            Y=Y,
-            Z_PDN=Z_PDN,
+            Y=Y_overall,
+            Z_PDN=Z_overall,
             output_path=overall_path,
             clip_range=clip_overall,
             bins=args.bins,
             show_stats=show_stats,
+            kde_max_points=args.kde_max_points,
+            rng=rng,
         )
 
     # ---- 特征维度图 ----
     if not args.skip_per_feature:
+        Y_feat, Z_feat = _maybe_subsample_N(
+            Y, Z_PDN, args.sample_n_per_feature, rng=rng, tag="per_feature"
+        )
         if args.separate_per_feature:
             # 分开模式：Y 与 Z_PDN 各自一张 grid 图
             plot_per_feature_separate(
-                Y=Y,
-                Z_PDN=Z_PDN,
+                Y=Y_feat,
+                Z_PDN=Z_feat,
                 output_path_y=os.path.join(
                     args.output_dir, f"{args.prefix}_pdn_density_per_feature_Y.png"
                 ),
@@ -622,12 +727,14 @@ def main() -> None:
                 feature_dims=args.feature_dims,
                 n_cols=args.n_cols,
                 show_stats=show_stats,
+                kde_max_points=args.kde_max_points,
+                rng=rng,
             )
         else:
             # 默认叠加模式：Y 与 Z_PDN 画在同一张 grid 图
             plot_per_feature(
-                Y=Y,
-                Z_PDN=Z_PDN,
+                Y=Y_feat,
+                Z_PDN=Z_feat,
                 output_path=os.path.join(
                     args.output_dir, f"{args.prefix}_pdn_density_per_feature.png"
                 ),
@@ -636,6 +743,8 @@ def main() -> None:
                 feature_dims=args.feature_dims,
                 n_cols=args.n_cols,
                 show_stats=show_stats,
+                kde_max_points=args.kde_max_points,
+                rng=rng,
             )
 
     print("Done.")

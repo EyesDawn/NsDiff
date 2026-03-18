@@ -39,7 +39,10 @@ def dict2namespace(config):
 
 class iReflowEarlyStopping(EarlyStopping):
     def save_checkpoint(self, val_loss, model):
-        """保存模型检查点"""
+        """保存模型检查点
+        
+        注意：虽然参数名为 val_loss，但实际传入的是 CRPS 指标值
+        """
         if self.verbose:
             self.trace_func(
                 f"Validation CRPS decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}). Saving model ..."
@@ -545,6 +548,7 @@ class iReflowExp(ProbForecastExp):
         exists = os.path.exists(self.run_checkpoint_filepath)
         return exists
     
+    # TODO: 修改 setting 格式，使其符合 iTransformer 的 setting 格式
     def _get_setting(self, seed=0):
         """
         生成实验设置字符串，用于 checkpoints 路径命名
@@ -1185,7 +1189,7 @@ def std_visual(batch_x, batch_y, pred_std, name='./pic/test.pdf'):
     # plt.grid(True) 
     x_std = np.std(batch_x)                  # 标量
     x_std = np.full(192, x_std, dtype=float)
-    _,_,y_std = DDN(batch_y, 7)
+    _,_,y_std = DDN(batch_y, 25)
     plt.subplot(2,1,1)
     plt.plot(batch_y, label='GroundTruth', linewidth=2., color='#9D2121')    
     plt.subplot(2,1,2)

@@ -45,11 +45,11 @@ PRED_LEN=192
 HORIZON=1
 
 # 设备配置
-GPU_ID=1
+GPU_ID=2
 export CUDA_VISIBLE_DEVICES=${GPU_ID}
 DEVICE="cuda:0"
 
-SEEDS='[2225]'
+SEEDS='[2223]'
 CHECKPOINTS="./results/runs/iTransformer/"
 ITR=1
 
@@ -63,6 +63,7 @@ ITR=1
 
 # STAGE2_WANDB_PROJECT="iReflow-Stage2-Uncertainty-ljl"
 # STAGE2_CHECKPOINTS="./results/runs/iTransformer/"
+# STAGE2_LR=0.0001
 
 # python3 -u ./src/experiments/pretrain_uncertainty_estimator.py \
 #     --wandb_project ${STAGE2_WANDB_PROJECT} \
@@ -115,9 +116,9 @@ STAGE3_WANDB_PROJECT="iReflow-Stage3-Velocity-ljl"
 STAGE3_CHECKPOINTS="./results/runs/iTransformer/"
 STAGE3_LR=0.0005
 
-CUDA_LAUNCH_BLOCKING=1 python3 -u ./src/experiments/iReflow.py \
+python3 -u ./src/experiments/iReflow.py \
     --wandb_project ${STAGE3_WANDB_PROJECT} \
-    --is_training 1 \
+    --is_training 0 \
     --root_path ${ROOT_PATH} \
     --data_path ${DATA_PATH} \
     --model_id ${MODEL_ID} \

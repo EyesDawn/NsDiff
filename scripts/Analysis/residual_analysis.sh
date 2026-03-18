@@ -49,26 +49,37 @@ export CUDA_DEVICE_ORDER=PCI_BUS_ID
 #     --clip_min -6 --clip_max 6
 
 # ── PDN 归一化前后概率密度分布对比 ─────────────────────────────────────────────
-# 整体图（[N, P, D] 全部展平）+ 特征维度 grid 图（自动选最多 12 个均匀分布维度）
-# python3 -u ./src/analysis/pdn_density_plot.py \
-#     --npz_path  ./results/analysis/electricity_residuals_fast.npz \
-#     --output_dir ./results/analysis \
-#     --prefix    electricity \
-#     --zpdn_clip_min -6 --zpdn_clip_max 6 \
-#     --bins 120 \
-#     --n_cols 3 \
-#     --skip_overall
-
-# 若需指定特定特征维度（例如 0 1 2 10 50 100），可加 --feature_dims 参数：
+# 窗口图（[12, P, d] 展平，12个连续样本分3段×4个，每段一个子图）
+#   --window_start     : N 轴起始索引列表（默认 0）
+#   --window_size      : 连续样本总数（默认 12）
+#   --window_segment_size : 每段样本数（默认 4），n_segments = window_size // window_segment_size
+#   --feature_dims     : 指定特征维度（省略则自动选最多 12 个均匀分布维度）
+#   --n_cols           : grid 列数
+#   --separate_window  : 合并所有 window_start，只输出 2 张图（Y / ZPDN）
 python3 -u ./src/analysis/pdn_density_plot.py \
     --npz_path  ./results/analysis/electricity_residuals_origin.npz \
     --output_dir ./results/analysis \
-    --prefix    electricity_S0_origin \
+    --prefix    electricity_d261 \
+    --bins 60 \
+    --n_cols 3 \
+    --separate_window \
+    --feature_dims 290 \
+    --window_start 0 100 200 300 400 500 600 700 800 900 \
+    --window_size 12 \
+    --window_segment_size 4 \
     --no_clip \
-    --bins 120 \
-    --separate_per_feature \
-    --sample_n_overall 10 \
-    --sample_n_per_feature 10 \
-    --kde_max_points 200000 \
-    --seed 0 \
-    --skip_overall
+    --skip_per_feature
+
+# # 若需指定特定特征维度（例如 0 1 2 10 50 100），可加 --feature_dims 参数：
+# python3 -u ./src/analysis/pdn_density_plot.py \
+#     --npz_path  ./results/analysis/electricity_residuals_origin.npz \
+#     --output_dir ./results/analysis \
+#     --prefix    electricity_S0_origin \
+#     --no_clip \
+#     --bins 120 \
+#     --separate_per_feature \
+#     --sample_n_overall 10 \
+#     --sample_n_per_feature 10 \
+#     --kde_max_points 200000 \
+#     --seed 0 \
+#     --skip_window

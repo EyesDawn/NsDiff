@@ -322,6 +322,203 @@ def plot_overall(
     print(f"[Overall] Saved to: {output_path}")
 
 
+def plot_window(
+    Y: np.ndarray,
+    Z_PDN: np.ndarray,
+    output_path: str,
+    clip_range: Optional[Tuple[float, float]],
+    bins: int,
+    feature_dims: Optional[List[int]],
+    n_cols: int,
+    window_start: int = 0,
+    window_size: int = 12,
+    segment_size: int = 4,
+    show_stats: bool = True,
+    kde_max_points: Optional[int] = None,
+    rng: Optional[np.random.Generator] = None,
+) -> None:
+    """
+    绘制窗口密度图：选定特征维度，对 N 轴上 window_size 个连续样本按 segment_size
+    均分为若干段，每段（dim, segment）对绘制一个子图，合并为 n_cols×n_rows 的 grid 图。
+
+    Args:
+        Y             : 真实未来序列，shape [N, P, D]。
+        Z_PDN         : PDN 归一化后残差，shape [N, P, D]。
+        output_path   : 输出图片路径。
+        clip_range    : 截断区间，None 表示不截断。
+        bins          : 直方图分桶数。
+        feature_dims  : 要展示的特征维度索引列表；None 则自动选取最多 12 个均匀分布的维度。
+        n_cols        : grid 列数。
+        window_start  : 12 个连续样本在 N 轴的起始索引。
+        window_size   : 连续样本总数（默认 12）。
+        segment_size  : 每段样本数（默认 4），n_segments = window_size // segment_size。
+        show_stats    : 是否在每个子图内标注统计量。
+    """
+    N, P, D = Y.shape
+    dims = _resolve_feature_dims(feature_dims, D)
+    if dims is None:
+        return
+
+    n_segments = window_size // segment_size
+
+    # 校验起始索引
+    end_idx = window_start + window_size
+    if end_idx > N:
+        print(
+            f"[Window] 警告: window_start={window_start} + window_size={window_size} = "
+            f"{end_idx} 超出 N={N}，自动截断至 N。"
+        )
+        end_idx = N
+
+    # 子图顺序：dim 为外层，segment 为内层（每行一个 dim）
+    n_plots = len(dims) * n_segments
+    fig, gs, n_rows, nc = _build_grid_fig(n_plots, n_cols)
+
+    for i, d in enumerate(dims):
+        for s in range(n_segments):
+            si = window_start + s * segment_size
+            ei = min(si + segment_size, N)
+            Y_seg = Y[si:ei, :, d]      # [segment_size, P]
+            Z_seg = Z_PDN[si:ei, :, d]
+            idx = i * n_segments + s
+            row, col = divmod(idx, nc)
+            ax = fig.add_subplot(gs[row, col])
+            _plot_density_on_ax(
+                ax=ax,
+                data_before=Y_seg,
+                data_after=Z_seg,
+                clip_range=clip_range,
+                bins=bins,
+                label_before="Y",
+                label_after=r"$Z_{\rm PDN}$",
+                add_normal_ref=True,
+                title=f"dim={d}  seg{s + 1} [N={si}:{ei}]",
+                show_stats=show_stats,
+                kde_max_points=kde_max_points,
+                rng=rng,
+            )
+
+    _hide_extra_subplots(fig, gs, n_plots, n_rows, nc)
+    fig.suptitle(
+        rf"Window Density: Y vs $Z_{{\rm PDN}}$  "
+        rf"[start={window_start}, size={window_size}, seg={segment_size}]",
+        fontsize=12,
+        y=1.01,
+    )
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    fig.savefig(output_path, bbox_inches="tight")
+    plt.close(fig)
+    print(f"[Window] {len(dims)} dims × {n_segments} segs → Saved to: {output_path}")
+
+
+def plot_window_separate(
+    Y: np.ndarray,
+    Z_PDN: np.ndarray,
+    output_path_y: str,
+    output_path_zpdn: str,
+    clip_range: Optional[Tuple[float, float]],
+    bins: int,
+    feature_dims: Optional[List[int]],
+    n_cols: int,
+    window_start: Optional[List[int]] = None,
+    window_size: int = 12,
+    segment_size: int = 4,
+    show_stats: bool = True,
+    kde_max_points: Optional[int] = None,
+    rng: Optional[np.random.Generator] = None,
+) -> None:
+    """
+    窗口密度图的分开模式：将 Y 与 Z_PDN **各自独立**绘制成一张 grid 图。
+
+    每张图的子图排布与 plot_window() 相同（dim 为外层，segment 为内层），
+    但每个子图只绘制单条分布（复用 _plot_single_on_ax）。
+
+    生成两个文件：
+      - output_path_y    : 每个子图仅显示 Y[si:ei, :, d] 的密度分布
+      - output_path_zpdn : 每个子图仅显示 Z_PDN[si:ei, :, d] 的密度分布
+
+    Args:
+        Y               : 真实未来序列，shape [N, P, D]。
+        Z_PDN           : PDN 归一化后残差，shape [N, P, D]。
+        output_path_y   : Y grid 图输出路径。
+        output_path_zpdn: Z_PDN grid 图输出路径。
+        clip_range      : 截断区间，None 表示不截断。
+        bins            : 直方图分桶数。
+        feature_dims    : 要展示的特征维度索引列表；None 则自动选取最多 12 个均匀分布的维度。
+        n_cols          : grid 列数。
+        window_start    : N 轴起始索引列表，每个 start 都会作为独立窗口拼到同一张图里。
+        window_size     : 连续样本总数（默认 12）。
+        segment_size    : 每段样本数（默认 4）。
+        show_stats      : 是否在每个子图内标注统计量。
+    """
+    N, P, D = Y.shape
+    dims = _resolve_feature_dims(feature_dims, D)
+    if dims is None:
+        return
+
+    raw_starts = [0] if window_start is None else [int(ws) for ws in window_start]
+    starts = [ws for ws in raw_starts if 0 <= ws < N]
+    invalid_starts = [ws for ws in raw_starts if ws < 0 or ws >= N]
+    if invalid_starts:
+        print(f"[Window separate] 警告: 以下 window_start 越界，已忽略: {invalid_starts}")
+    if len(starts) == 0:
+        print("[Window separate] window_start 为空，跳过。")
+        return
+
+    n_segments = window_size // segment_size
+    n_plots = len(starts) * len(dims) * n_segments
+
+    for (arr, color, var_label, out_path, suptitle) in [
+        (
+            Y, "tab:orange", "Y", output_path_y,
+            rf"Window Density: $Y$ (before PDN)  "
+            rf"[starts={starts}, size={window_size}, seg={segment_size}]",
+        ),
+        (
+            Z_PDN, "tab:blue", r"$Z_{\rm PDN}$", output_path_zpdn,
+            rf"Window Density: $Z_{{\rm PDN}}$ (after PDN)  "
+            rf"[starts={starts}, size={window_size}, seg={segment_size}]",
+        ),
+    ]:
+        plt.close("all")
+        fig, gs, n_rows, nc = _build_grid_fig(n_plots, n_cols)
+
+        for w_idx, ws in enumerate(starts):
+            for i, d in enumerate(dims):
+                for s in range(n_segments):
+                    si = ws + s * segment_size
+                    ei = min(si + segment_size, N)
+                    seg_data = arr[si:ei, :, d]     # [segment_size, P]
+                    idx = (w_idx * len(dims) + i) * n_segments + s
+                    row, col = divmod(idx, nc)
+                    ax = fig.add_subplot(gs[row, col])
+                    _plot_single_on_ax(
+                        ax=ax,
+                        data=seg_data,
+                        clip_range=clip_range,
+                        bins=bins,
+                        color=color,
+                        label=var_label,
+                        add_normal_ref=False,
+                        title=f"w={ws} dim={d} seg{s + 1} [N={si}:{ei}]",
+                        show_stats=show_stats,
+                        kde_max_points=kde_max_points,
+                        rng=rng,
+                    )
+
+        _hide_extra_subplots(fig, gs, n_plots, n_rows, nc)
+        fig.suptitle(suptitle, fontsize=12, y=1.01)
+
+        os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+        fig.savefig(out_path, bbox_inches="tight")
+        plt.close(fig)
+        print(
+            f"[Window separate] {len(starts)} starts × {len(dims)} dims × {n_segments} segs"
+            f" → Saved to: {out_path}"
+        )
+
+
 def _resolve_feature_dims(feature_dims: Optional[List[int]], D: int) -> Optional[List[int]]:
     """统一处理 feature_dims：None 时自动选取，否则过滤越界值。返回 None 表示可跳过。"""
     if feature_dims is None:
@@ -617,17 +814,55 @@ def main() -> None:
         "--n_cols",
         type=int,
         default=3,
-        help="Number of columns in the per-feature grid figure.",
+        help="Number of columns in the per-feature / window grid figure.",
     )
     parser.add_argument(
-        "--skip_overall",
+        "--window_start",
+        type=int,
+        nargs="+",
+        default=[0],
+        help=(
+            "One or more starting indices along the N axis for the window plot "
+            "(default: [0]). In default overlay mode, each value produces one file "
+            "with _w{start}. In --separate_window mode, all starts are merged into "
+            "a single Y figure and a single Z_PDN figure."
+        ),
+    )
+    parser.add_argument(
+        "--window_size",
+        type=int,
+        default=12,
+        help="Total number of consecutive samples for the window plot (default: 12).",
+    )
+    parser.add_argument(
+        "--window_segment_size",
+        type=int,
+        default=4,
+        help=(
+            "Number of consecutive samples per segment in the window plot (default: 4). "
+            "n_segments = window_size // window_segment_size."
+        ),
+    )
+    parser.add_argument(
+        "--skip_window",
         action="store_true",
-        help="Skip the overall (all-dims-combined) figure.",
+        help="Skip the window (all-dims-combined) figure.",
     )
     parser.add_argument(
         "--skip_per_feature",
         action="store_true",
         help="Skip the per-feature-dimension figure.",
+    )
+    parser.add_argument(
+        "--separate_window",
+        action="store_true",
+        help=(
+            "When set, plot Y and Z_PDN in two SEPARATE grid figures for the window plot "
+            "(one for Y, one for Z_PDN) instead of overlaying them. "
+            "All window_start values are merged into those two figures. "
+            "Output files: {prefix}_pdn_density_window_Y.png and "
+            "{prefix}_pdn_density_window_ZPDN.png."
+        ),
     )
     parser.add_argument(
         "--separate_per_feature",
@@ -687,24 +922,50 @@ def main() -> None:
         clip_overall = (args.zpdn_clip_min, args.zpdn_clip_max)
         clip_feat = clip_overall
 
-    # ---- 整体图 ----
-    if not args.skip_overall:
-        Y_overall, Z_overall = _maybe_subsample_N(
-            Y, Z_PDN, args.sample_n_overall, rng=rng, tag="overall"
-        )
-        overall_path = os.path.join(
-            args.output_dir, f"{args.prefix}_pdn_density_overall.png"
-        )
-        plot_overall(
-            Y=Y_overall,
-            Z_PDN=Z_overall,
-            output_path=overall_path,
-            clip_range=clip_overall,
-            bins=args.bins,
-            show_stats=show_stats,
-            kde_max_points=args.kde_max_points,
-            rng=rng,
-        )
+    # ---- 窗口图 ----
+    if not args.skip_window:
+        if args.separate_window:
+            # 分开模式：所有 window_start 合并后，Y 与 Z_PDN 各自一张 grid 图
+            plot_window_separate(
+                Y=Y,
+                Z_PDN=Z_PDN,
+                output_path_y=os.path.join(
+                    args.output_dir, f"{args.prefix}_pdn_density_window_Y.png"
+                ),
+                output_path_zpdn=os.path.join(
+                    args.output_dir, f"{args.prefix}_pdn_density_window_ZPDN.png"
+                ),
+                clip_range=clip_overall,
+                bins=args.bins,
+                feature_dims=args.feature_dims,
+                n_cols=args.n_cols,
+                window_start=args.window_start,
+                window_size=args.window_size,
+                segment_size=args.window_segment_size,
+                show_stats=show_stats,
+                kde_max_points=args.kde_max_points,
+                rng=rng,
+            )
+        else:
+            # 默认叠加模式：每个 window_start 输出一张图
+            for ws in args.window_start:
+                plot_window(
+                    Y=Y,
+                    Z_PDN=Z_PDN,
+                    output_path=os.path.join(
+                        args.output_dir, f"{args.prefix}_pdn_density_window_w{ws}.png"
+                    ),
+                    clip_range=clip_overall,
+                    bins=args.bins,
+                    feature_dims=args.feature_dims,
+                    n_cols=args.n_cols,
+                    window_start=ws,
+                    window_size=args.window_size,
+                    segment_size=args.window_segment_size,
+                    show_stats=show_stats,
+                    kde_max_points=args.kde_max_points,
+                    rng=rng,
+                )
 
     # ---- 特征维度图 ----
     if not args.skip_per_feature:

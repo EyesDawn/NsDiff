@@ -113,7 +113,7 @@ echo "Stage 3: Training Velocity Network"
 echo "============================================================================"
 echo ""
 
-STAGE3_WANDB_PROJECT="iReflow-Stage3-Velocity-revin"
+STAGE3_WANDB_PROJECT="iReflow-Stage3-Velocity"
 STAGE3_CHECKPOINTS="./results/runs/iTransformer/"
 STAGE3_LR=0.0001
 

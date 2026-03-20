@@ -28,7 +28,6 @@ DROPOUT=0.1
 USE_RELATIVE_SPACE=True
 
 # 训练配置
-IS_TRAINING=1
 BATCH_SIZE=16
 EPOCHS=20
 PATIENCE=6
@@ -45,11 +44,11 @@ PRED_LEN=192
 HORIZON=1
 
 # 设备配置
-GPU_ID=2
+GPU_ID=0
 export CUDA_VISIBLE_DEVICES=${GPU_ID}
 DEVICE="cuda:0"
 
-SEEDS='[2223]'
+SEEDS='[2225]'
 CHECKPOINTS="./results/runs/iTransformer/"
 ITR=1
 
@@ -117,7 +116,6 @@ STAGE3_CHECKPOINTS="./results/runs/iTransformer/"
 STAGE3_LR=0.0005
 
 python3 -u ./src/experiments/iReflow.py \
-    --wandb_project ${STAGE3_WANDB_PROJECT} \
     --is_training 0 \
     --root_path ${ROOT_PATH} \
     --data_path ${DATA_PATH} \

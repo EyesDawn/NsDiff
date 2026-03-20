@@ -495,11 +495,18 @@ class iReflowExp(ProbForecastExp):
         delattr(self, '_num_samples_for_eval')
         return result
     
+    # 不参与 run_save_dir hash 计算的字段：这些字段只影响运行行为，不影响模型结构/数据
+    _run_irrelevant_fields = {
+        'is_training',   # 训练/测试模式切换，is_training=0 需要能找到 is_training=1 训练出的模型
+        'wandb_project', # 日志项目名，不影响实验结果
+    }
+
     @property
     def result_related_configs(self):
         """
         重写 result_related_configs 属性，确保所有值都可以被 JSON 序列化
         排除不可序列化的对象（如 argparse.Namespace, 模型对象等）
+        同时排除 _run_irrelevant_fields 中的字段，使 run_save_dir hash 在不同运行模式下保持一致
         """
         from torch_timeseries.utils import asdict_exc
         from torch_timeseries.core.experiments.settings import BaseIrrelevant
@@ -510,18 +517,18 @@ class iReflowExp(ProbForecastExp):
         # 过滤掉不可序列化的对象
         serializable_ident = {}
         for k, v in ident.items():
+            if k in self._run_irrelevant_fields:
+                continue
             try:
                 # 尝试序列化以检查是否可序列化
                 json.dumps(v)
                 serializable_ident[k] = v
             except (TypeError, ValueError):
                 # 如果不可序列化，转换为字符串表示
-                # 对于 argparse.Namespace 等对象，转换为字符串
+                # 对于 argparse.Namespace 等对象，转换为字典
                 if isinstance(v, (argparse.Namespace,)):
-                    # 对于 Namespace 对象，转换为字典
                     serializable_ident[k] = vars(v) if hasattr(v, '__dict__') else str(v)
                 elif hasattr(v, '__class__'):
-                    # 对于其他对象，使用类型名称
                     serializable_ident[k] = type(v).__name__
                 else:
                     serializable_ident[k] = str(v)
@@ -743,89 +750,14 @@ class iReflowExp(ProbForecastExp):
             
             print('iTransformer weights extracted successfully.')
     
-    def _load_checkpoint_model(self, setting):
-        """
-        从 checkpoints 加载模型
-        路径规则：os.path.join(self.checkpoints, setting) + '/checkpoint.pth'
-        
-        支持两种 checkpoint 格式：
-        1. iReflow checkpoint: 直接加载整个模型
-        2. iTransformer checkpoint: 只加载 itransformer 部分的权重
-        """
-        path = os.path.join(self.checkpoints, setting)
-        best_model_path = os.path.join(path, 'checkpoint.pth')
-        
-        if not os.path.exists(best_model_path):
-            raise FileNotFoundError(
-                f"Checkpoint not found at {best_model_path}. "
-                f"Please ensure the model has been trained and saved."
-            )
-        
-        print(f'Loading model from {best_model_path}')
-        # 使用 weights_only=True 因为 checkpoint 只包含模型权重（state_dict）
-        checkpoint = torch.load(best_model_path, map_location=self.device, weights_only=True)
-        
-        # 处理嵌套字典的情况（checkpoint 可能包含 'model' 键）
-        if isinstance(checkpoint, dict) and 'model' in checkpoint:
-            print('Found nested checkpoint structure, extracting model state_dict...')
-            checkpoint = checkpoint['model']
-        
-        # 检查是否是 iTransformer checkpoint（键名包含 enc_embedding, encoder, projector）
-        # 还是 iReflow checkpoint（包含 itransformer, velocity_net 等）
-        is_itransformer_checkpoint = any(
-            key.startswith('enc_embedding') or 
-            key.startswith('encoder') or 
-            key.startswith('projector')
-            for key in checkpoint.keys()
-        )
-        
-        if is_itransformer_checkpoint:
-            # 这是 iTransformer checkpoint，需要提取 itransformer 部分的权重
-            print('Detected iTransformer checkpoint, loading itransformer weights...')
-            
-            # 构建 itransformer 的 state_dict（直接使用原始键名，因为 load_state_dict 是直接加载到子模块）
-            itransformer_state_dict = {}
-            for key, value in checkpoint.items():
-                # 跳过 projector（iReflow 不使用）
-                if key.startswith('projector'):
-                    continue
-                # 跳过非模型参数
-                if key in ['optimizer', 'scheduler', 'epoch', 'current_epoch', 'rng_state', 'early_stopping']:
-                    continue
-                # 直接使用原始键名（不需要添加 'itransformer.' 前缀，因为是直接加载到子模块）
-                itransformer_state_dict[key] = value
-            
-            if not itransformer_state_dict:
-                raise ValueError("Could not extract itransformer weights from iTransformer checkpoint. Checkpoint may be empty or in unexpected format.")
-            
-            # 只加载 itransformer 部分的权重
-            missing_keys, unexpected_keys = self.model.itransformer.load_state_dict(
-                itransformer_state_dict, strict=False
-            )
-            
-            if missing_keys:
-                print(f'Warning: Missing keys in itransformer: {missing_keys[:5]}...' if len(missing_keys) > 5 else f'Warning: Missing keys: {missing_keys}')
-            if unexpected_keys:
-                print(f'Warning: Unexpected keys: {unexpected_keys[:5]}...' if len(unexpected_keys) > 5 else f'Warning: Unexpected keys: {unexpected_keys}')
-            
-            print('iTransformer weights loaded successfully. Velocity network and uncertainty estimator remain untrained.')
-        else:
-            # 这是 iReflow checkpoint，直接加载整个模型
-            missing_keys, unexpected_keys = self.model.load_state_dict(checkpoint, strict=False)
-            
-            if missing_keys:
-                print(f'Warning: Missing keys: {missing_keys[:5]}...' if len(missing_keys) > 5 else f'Warning: Missing keys: {missing_keys}')
-            if unexpected_keys:
-                print(f'Warning: Unexpected keys: {unexpected_keys[:5]}...' if len(unexpected_keys) > 5 else f'Warning: Unexpected keys: {unexpected_keys}')
-            
-            print('iReflow model loaded successfully')
     
     def _resume_run(self, seed):
         """恢复运行检查点（重写父类方法以支持调度器状态恢复）"""
         run_checkpoint_filepath = os.path.join(self.run_save_dir, f"run_checkpoint.pth")
         print(f"resuming from {run_checkpoint_filepath}")
 
-        check_point = torch.load(run_checkpoint_filepath, map_location=self.device)
+        # torch.serialization.add_safe_globals([np.core.multiarray.scalar])
+        check_point = torch.load(run_checkpoint_filepath, map_location=self.device, weights_only=False)
 
         self.model.load_state_dict(check_point["model"])
         self.model_optim.load_state_dict(check_point["optimizer"])
@@ -893,8 +825,14 @@ class iReflowExp(ProbForecastExp):
             # 需要先 setup_run 以初始化必要的路径和配置
             self._setup_run(seed)
             
-            # 从 checkpoints 加载模型
-            self._load_checkpoint_model(setting)
+            # 加载已训练好的 iReflow 模型（best_model.pth 由训练阶段保存）
+            if not os.path.exists(self.best_checkpoint_filepath):
+                raise FileNotFoundError(
+                    f"iReflow best model not found at {self.best_checkpoint_filepath}. "
+                    f"Please ensure the model has been trained (is_training=1 or is_training=2) before testing."
+                )
+            print(f'Loading iReflow model from {self.best_checkpoint_filepath}')
+            self._load_best_model()
             
             # 直接测试
             test_result = self._test()

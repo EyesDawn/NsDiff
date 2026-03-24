@@ -404,7 +404,7 @@ class iReflowExp(ProbForecastExp):
                     batch_x_date_enc = batch_x_date_enc.to(self.device).float()
 
                     # 生成采样预测 + 点预测与 sigma
-                    samples, y_hat, sigma = self.model.forecast(
+                    samples, y_hat, sigma, z_samples, x_samples = self.model.forecast(
                         x_enc=batch_x,
                         x_mark_enc=batch_x_date_enc,
                         num_samples=num_samples,
@@ -448,9 +448,18 @@ class iReflowExp(ProbForecastExp):
                         data = voutput[0,:,:,-1]
                         prob_visual(data, vtrue, name=os.path.join(os.path.join('./plot_results', self.dataset_type), str(i) + '.pdf'))
 
-                        sigma = sigma.detach().cpu().numpy()
-                        vsigma = sigma[0,:,-1]
-                        std_visual(vx, true[0, :, -1], vsigma, name=os.path.join(os.path.join('./plot_results', self.dataset_type), str(i) + '_std' + '.pdf'))
+                        # sigma = sigma.detach().cpu().numpy()
+                        # vsigma = sigma[0,:,-1]
+                        # std_visual(vx, true[0, :, -1], vsigma, name=os.path.join(os.path.join('./plot_results', self.dataset_type), str(i) + '_std' + '.pdf'))
+
+                        # z = z_samples[0,:,:,-1].detach().cpu().numpy()
+                        # x = x_samples[0,:,:,-1].detach().cpu().numpy()
+                        # zx_visual(z,x, name=os.path.join(os.path.join('./plot_results', self.dataset_type), str(i) + '_std' + '.pdf'))
+
+                        for j in range(5):
+                            z = z_samples[j,0,:,:,-1].detach().cpu().numpy()
+                            x = x_samples[j,0,:,:,-1].detach().cpu().numpy()
+                            zx_visual(z,x, name=os.path.join(os.path.join('./plot_results', self.dataset_type), str(i) + '_std' + str(j) + '.pdf'))
 
                     progress_bar.update(batch_x.shape[0])
 
@@ -1142,6 +1151,51 @@ def std_visual(batch_x, batch_y, pred_std, name='./pic/test.pdf'):
     plt.legend()
     plt.savefig(name, bbox_inches='tight')
     plt.close()
+
+
+def zx_visual(z, x, name='./pic/test.pdf'):
+    """
+    z: shape [N, T] 或 [N, D]
+    x: shape [N, T] 或 [N, D]
+    沿 axis=0 计算 mean/std，并画出 mean 及 mean±std
+    """
+    z_std = np.std(z, axis=0)
+    z_mean = np.mean(z, axis=0)
+
+    x_std = np.std(x, axis=0)
+    x_mean = np.mean(x, axis=0)
+
+    t_z = np.arange(len(z_mean))
+    t_x = np.arange(len(x_mean))
+
+    plt.figure(figsize=(10, 7))
+
+    # ===== z =====
+    plt.subplot(2, 1, 1)
+    plt.plot(t_x, x_mean, label='x mean', linewidth=2)
+    plt.plot(t_x, x_mean + x_std, label='x mean + std', linestyle='--', linewidth=1.5)
+    plt.plot(t_x, x_mean - x_std, label='x mean - std', linestyle='--', linewidth=1.5)
+    plt.fill_between(t_x, x_mean - x_std, x_mean + x_std, alpha=0.2)
+    plt.title('X statistics')
+    plt.legend()
+    plt.grid(True)
+
+    # ===== x =====
+    plt.subplot(2, 1, 2)    
+    plt.plot(t_z, z_mean, label='z mean', linewidth=2)
+    plt.plot(t_z, z_mean + z_std, label='z mean + std', linestyle='--', linewidth=1.5)
+    plt.plot(t_z, z_mean - z_std, label='z mean - std', linestyle='--', linewidth=1.5)
+    plt.fill_between(t_z, z_mean - z_std, z_mean + z_std, alpha=0.2)
+    plt.title('Z statistics')
+    plt.legend()
+    plt.grid(True)
+
+    plt.tight_layout()
+    plt.savefig(name, bbox_inches='tight')
+    plt.close()
+
+
+
 
 # import numpy as np
 # import matplotlib.pyplot as plt

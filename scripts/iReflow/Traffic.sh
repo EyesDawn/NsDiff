@@ -37,6 +37,7 @@ LR_PATIENCE=1
 NUM_SAMPLING_STEPS=5
 TEMPERATURE=1.0
 NUM_SAMPLES=100
+X0_DIST="standard_normal"
 
 # 预测配置
 SEQ_LEN=96
@@ -44,11 +45,11 @@ PRED_LEN=192
 HORIZON=1
 
 # 设备配置
-GPU_ID=0
+GPU_ID=6
 export CUDA_VISIBLE_DEVICES=${GPU_ID}
 DEVICE="cuda:0"
 
-SEEDS='[2225]'
+SEEDS='[2222]'
 CHECKPOINTS="./results/runs/iTransformer/"
 ITR=1
 
@@ -60,7 +61,7 @@ ITR=1
 # echo "============================================================================"
 # echo ""
 
-# STAGE2_WANDB_PROJECT="iReflow-Stage2-Uncertainty-ljl"
+# STAGE2_WANDB_PROJECT="iReflow-Stage2-Uncertainty"
 # STAGE2_CHECKPOINTS="./results/runs/iTransformer/"
 # STAGE2_LR=0.0001
 
@@ -111,12 +112,13 @@ echo "Stage 3: Training Velocity Network"
 echo "============================================================================"
 echo ""
 
-STAGE3_WANDB_PROJECT="iReflow-Stage3-Velocity-ljl"
+STAGE3_WANDB_PROJECT="iReflow-Stage3-Velocity"
 STAGE3_CHECKPOINTS="./results/runs/iTransformer/"
 STAGE3_LR=0.0005
 
 python3 -u ./src/experiments/iReflow.py \
     --is_training 0 \
+    --wandb_project ${STAGE3_WANDB_PROJECT} \
     --root_path ${ROOT_PATH} \
     --data_path ${DATA_PATH} \
     --model_id ${MODEL_ID} \
@@ -147,6 +149,7 @@ python3 -u ./src/experiments/iReflow.py \
     --num_samples ${NUM_SAMPLES} \
     --device ${DEVICE} \
     --use_relative_space ${USE_RELATIVE_SPACE} \
+    --x0_dist ${X0_DIST} \
     runs --seeds="${SEEDS}"
 
 echo ""

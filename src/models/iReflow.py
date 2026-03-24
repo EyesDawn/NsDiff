@@ -57,10 +57,23 @@ class iReflow(nn.Module):
         
         # 采样步数
         self.num_sampling_steps = configs.num_sampling_steps if hasattr(configs, 'num_sampling_steps') else 1
+        self.x0_dist = getattr(configs, 'x0_dist', 'pred_gaussian')
+        if self.x0_dist not in {'pred_gaussian', 'standard_normal'}:
+            raise ValueError(
+                f"Unsupported x0_dist: {self.x0_dist}. "
+                "Expected one of {'pred_gaussian', 'standard_normal'}."
+            )
 
         # Loss 权重（默认不改变现有行为）
         self.nll_loss_weight = getattr(configs, 'nll_loss_weight', 1.0)
         self.velocity_loss_weight = getattr(configs, 'velocity_loss_weight', 1.0)
+
+    def _build_x0(self, y_hat, sigma, epsilon, temperature=1.0):
+        """根据配置构建 Source State X_0。"""
+        if self.x0_dist == 'pred_gaussian':
+            return y_hat + temperature * epsilon * sigma
+        # standard_normal: X_0 ~ N(0, I)
+        return temperature * epsilon
 
         
     def get_encoder_features(self, x_enc, x_mark_enc):
@@ -173,7 +186,7 @@ class iReflow(nn.Module):
         # 如果不 detach，Velocity Net 可能会为了好走直线，去扭曲 y_hat 的位置，导致点预测变差。
         y_hat_flow = y_hat.detach()
         sigma_flow = sigma.detach()
-        X_0 = y_hat_flow + epsilon * sigma_flow
+        X_0 = self._build_x0(y_hat_flow, sigma_flow, epsilon, temperature=1.0)
         
         # Target State: X_1 = y_gt
         X_1 = y_gt
@@ -245,18 +258,18 @@ class iReflow(nn.Module):
         
         # Stage 2: 采样初始化
         samples = []
-        x_samples = []
-        z_samples = []
+        # x_samples = []
+        # z_samples = []
         
         for _ in range(num_samples):
             # 采样随机噪声
             epsilon = torch.randn(B, self.pred_len, D, device=device)
             
-            # 初始状态: X_0 = y_hat + temperature * epsilon * sigma
-            X_tau = y_hat + temperature * epsilon * sigma
+            # 初始状态 X_0
+            X_tau = self._build_x0(y_hat, sigma, epsilon, temperature=temperature)
 
-            cur_x_traj = []
-            cur_z_traj = []
+            # cur_x_traj = []
+            # cur_z_traj = []
 
             # Stage 3: ODE求解
             if self.num_sampling_steps == 1:
@@ -272,34 +285,25 @@ class iReflow(nn.Module):
                     tau_val = i * dt
                     tau = torch.ones(B, device=device) * tau_val
                     v = self.velocity_net(X_tau, tau, enc_features, y_hat, sigma)
-
-                    # if i==2:
-                    #     z_tau = (X_tau - y_hat) / sigma
-                    #     z_samples.append(z_tau)
-                    #     x_samples.append(X_tau)
-                    z_tau = (X_tau - y_hat)# / sigma
-                    cur_z_traj.append(z_tau)
-                    cur_x_traj.append(X_tau)
-
                     # Euler step
                     X_tau = X_tau + v * dt
                 X_pred = X_tau
             
             samples.append(X_pred)
 
-            cur_z_traj = torch.stack(cur_z_traj, dim=0)
-            cur_x_traj = torch.stack(cur_x_traj, dim=0)
-            z_samples.append(cur_z_traj)
-            x_samples.append(cur_x_traj)
+            # cur_z_traj = torch.stack(cur_z_traj, dim=0)
+            # cur_x_traj = torch.stack(cur_x_traj, dim=0)
+            # z_samples.append(cur_z_traj)
+            # x_samples.append(cur_x_traj)
         
         # [num_samples, B, P, D] -> [B, num_samples, P, D]
         samples = torch.stack(samples, dim=1)
 
-        z_samples = torch.stack(z_samples, dim=2)
-        x_samples = torch.stack(x_samples, dim=2)
+        # z_samples = torch.stack(z_samples, dim=2)
+        # x_samples = torch.stack(x_samples, dim=2)
         
-        
-        return samples, y_hat, sigma, z_samples, x_samples
+        # return samples, y_hat, sigma, z_samples, x_samples
+        return samples, y_hat, sigma
     
     def forward(self, x_enc, x_mark_enc, x_dec=None, x_mark_dec=None, y_gt=None, mode='train'):
         """

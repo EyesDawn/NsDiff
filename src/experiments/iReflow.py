@@ -94,6 +94,7 @@ class iReflowExp(ProbForecastExp):
     lr: float = 0.0001
     epochs: int = 100
     batch_size: int = 32
+    num_worker: int = 1
     patience: int = 10
     lr_patience: int = 1  # 学习率调度器的patience
     
@@ -101,6 +102,7 @@ class iReflowExp(ProbForecastExp):
     num_sampling_steps: int = 1  # ODE求解步数，1表示one-step generation
     temperature: float = 1.0  # 采样温度
     num_samples: int = 100  # 测试时生成的样本数
+    x0_dist: str = 'pred_gaussian'  # X_0 分布: pred_gaussian | standard_normal
     
     # 损失函数
     loss_func_type: str = 'mse'
@@ -163,6 +165,7 @@ class iReflowExp(ProbForecastExp):
         self.model_configs.class_strategy = self.class_strategy
         self.model_configs.factor = self.factor
         self.model_configs.num_sampling_steps = self.num_sampling_steps
+        self.model_configs.x0_dist = self.x0_dist
         # Loss 配置与梯度通路控制
         self.model_configs.nll_loss_weight = getattr(self, "nll_loss_weight", 1.0)
         self.model_configs.velocity_loss_weight = getattr(self, "velocity_loss_weight", 1.0)

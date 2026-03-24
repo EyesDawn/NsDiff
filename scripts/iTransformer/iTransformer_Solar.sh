@@ -2,7 +2,7 @@
 
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export PYTHONPATH=./
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=6
 
 model_name=iTransformer
 WANDB_PROJECT="iTransformer"
@@ -27,7 +27,7 @@ python -u ./src/experiments/iTransformer.py \
   --d_model 512 \
   --d_ff 512 \
   --learning_rate 0.0005 \
-  --itr 1
+  --itr 1 \
   --checkpoints ./results/runs/iTransformer/
 
 echo "iTransformer-Solar experiment completed!"

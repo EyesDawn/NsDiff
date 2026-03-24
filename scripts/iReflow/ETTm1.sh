@@ -39,6 +39,7 @@ LR_PATIENCE=1
 NUM_SAMPLING_STEPS=5
 TEMPERATURE=1.0
 NUM_SAMPLES=100
+X0_DIST="standard_normal"
 
 # 预测配置
 SEQ_LEN=96
@@ -46,11 +47,11 @@ PRED_LEN=192
 HORIZON=1
 
 # 设备配置
-GPU_ID=0
+GPU_ID=4
 export CUDA_VISIBLE_DEVICES=${GPU_ID}
 DEVICE="cuda:0"
 
-SEEDS='[2225]'
+SEEDS='[2222]'
 CHECKPOINTS="./results/runs/iTransformer/"
 ITR=1
 
@@ -58,51 +59,51 @@ ITR=1
 # Stage 2: 预训练 Uncertainty Estimator（不确定性估计）
 # ============================================================================
 # echo "============================================================================"
-echo "Stage 2: Pretraining Uncertainty Estimator"
-echo "============================================================================"
-echo ""
+# echo "Stage 2: Pretraining Uncertainty Estimator"
+# echo "============================================================================"
+# echo ""
 
-STAGE2_WANDB_PROJECT="iReflow-Stage2-Uncertainty"
-STAGE2_CHECKPOINTS="./results/runs/iTransformer/"
-STAGE2_LR=0.0001
+# STAGE2_WANDB_PROJECT="iReflow-Stage2-Uncertainty"
+# STAGE2_CHECKPOINTS="./results/runs/iTransformer/"
+# STAGE2_LR=0.0001
 
-python3 -u ./src/experiments/pretrain_uncertainty_estimator.py \
-    --is_training 1 \
-    --root_path ${ROOT_PATH} \
-    --data_path ${DATA_PATH} \
-    --model_id ${MODEL_ID} \
-    --model iReflow \
-    --data ${DATASET} \
-    --features ${D_FEATURES} \
-    --seq_len ${SEQ_LEN} \
-    --pred_len ${PRED_LEN} \
-    --e_layers ${E_LAYERS} \
-    --enc_in ${ENC_IN} \
-    --dec_in ${DEC_IN} \
-    --c_out ${C_OUT} \
-    --des ${DES} \
-    --d_model ${D_MODEL} \
-    --d_ff ${D_FF} \
-    --batch_size ${BATCH_SIZE} \
-    --lr ${STAGE2_LR} \
-    --itr ${ITR} \
-    --checkpoints ${STAGE2_CHECKPOINTS} \
-    --flow_layers ${FLOW_LAYERS} \
-    --n_heads ${N_HEADS} \
-    --dropout ${DROPOUT} \
-    --epochs 10 \
-    --patience 3 \
-    --lr_patience 1 \
-    --num_sampling_steps 1 \
-    --temperature 1.0 \
-    --num_samples 100 \
-    --device ${DEVICE} \
-    --use_relative_space ${USE_RELATIVE_SPACE} \
-    runs --seeds="${SEEDS}"
+# python3 -u ./src/experiments/pretrain_uncertainty_estimator.py \
+#     --is_training 1 \
+#     --root_path ${ROOT_PATH} \
+#     --data_path ${DATA_PATH} \
+#     --model_id ${MODEL_ID} \
+#     --model iReflow \
+#     --data ${DATASET} \
+#     --features ${D_FEATURES} \
+#     --seq_len ${SEQ_LEN} \
+#     --pred_len ${PRED_LEN} \
+#     --e_layers ${E_LAYERS} \
+#     --enc_in ${ENC_IN} \
+#     --dec_in ${DEC_IN} \
+#     --c_out ${C_OUT} \
+#     --des ${DES} \
+#     --d_model ${D_MODEL} \
+#     --d_ff ${D_FF} \
+#     --batch_size ${BATCH_SIZE} \
+#     --lr ${STAGE2_LR} \
+#     --itr ${ITR} \
+#     --checkpoints ${STAGE2_CHECKPOINTS} \
+#     --flow_layers ${FLOW_LAYERS} \
+#     --n_heads ${N_HEADS} \
+#     --dropout ${DROPOUT} \
+#     --epochs 10 \
+#     --patience 3 \
+#     --lr_patience 1 \
+#     --num_sampling_steps 1 \
+#     --temperature 1.0 \
+#     --num_samples 100 \
+#     --device ${DEVICE} \
+#     --use_relative_space ${USE_RELATIVE_SPACE} \
+#     runs --seeds="${SEEDS}"
 
-echo ""
-echo "Stage 2 completed!"
-echo ""
+# echo ""
+# echo "Stage 2 completed!"
+# echo ""
 
 # ============================================================================
 # Stage 3: 训练 Velocity Network
@@ -112,12 +113,13 @@ echo "Stage 3: Training Velocity Network"
 echo "============================================================================"
 echo ""
 
-STAGE3_WANDB_PROJECT="iReflow-Stage3-Velocity-ljl"
+STAGE3_WANDB_PROJECT="iReflow-Stage3-Velocity"
 STAGE3_CHECKPOINTS="./results/runs/iTransformer/"
 STAGE3_LR=0.0001
 
 python3 -u ./src/experiments/iReflow.py \
     --is_training 1 \
+    --wandb_project ${STAGE3_WANDB_PROJECT} \
     --root_path ${ROOT_PATH} \
     --data_path ${DATA_PATH} \
     --model_id ${MODEL_ID} \
@@ -148,6 +150,7 @@ python3 -u ./src/experiments/iReflow.py \
     --num_samples ${NUM_SAMPLES} \
     --device ${DEVICE} \
     --use_relative_space ${USE_RELATIVE_SPACE} \
+    --x0_dist ${X0_DIST} \
     runs --seeds="${SEEDS}"
 
 echo ""

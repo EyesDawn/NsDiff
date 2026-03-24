@@ -25,7 +25,7 @@ E_LAYERS=3
 FLOW_LAYERS=3
 D_FF=512
 DROPOUT=0.1
-USE_RELATIVE_SPACE=False
+USE_RELATIVE_SPACE=True
 
 # 训练配置
 IS_TRAINING=1
@@ -39,6 +39,7 @@ LR_PATIENCE=1
 NUM_SAMPLING_STEPS=5
 TEMPERATURE=1.0
 NUM_SAMPLES=100
+X0_DIST="standard_normal"
 
 # 预测配置
 SEQ_LEN=96
@@ -46,7 +47,7 @@ PRED_LEN=192
 HORIZON=1
 
 # 设备配置
-GPU_ID=0
+GPU_ID=5
 export CUDA_VISIBLE_DEVICES=${GPU_ID}
 DEVICE="cuda:0"
 
@@ -150,6 +151,7 @@ python3 -u ./src/experiments/iReflow.py \
     --num_samples ${NUM_SAMPLES} \
     --device ${DEVICE} \
     --use_relative_space ${USE_RELATIVE_SPACE} \
+    --x0_dist ${X0_DIST} \
     runs --seeds="${SEEDS}"
 
 echo ""

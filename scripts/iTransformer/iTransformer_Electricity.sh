@@ -2,7 +2,7 @@
 
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export PYTHONPATH=./
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=4
 
 model_name=iTransformer
 WANDB_PROJECT="iTransformer"
@@ -13,7 +13,7 @@ python -u ./src/experiments/iTransformer.py \
   --is_training 1 \
   --root_path ./data/ \
   --data_path electricity/electricity.csv \
-  --model_id ECL_96_192 \
+  --model_id electricity_96_192 \
   --model $model_name \
   --data Electricity \
   --features M \

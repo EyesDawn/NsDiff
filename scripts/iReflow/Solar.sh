@@ -46,7 +46,7 @@ PRED_LEN=192
 HORIZON=1
 
 # 设备配置
-GPU_ID=6
+GPU_ID=0
 export CUDA_VISIBLE_DEVICES=${GPU_ID}
 DEVICE="cuda:0"
 
@@ -119,7 +119,7 @@ STAGE3_LR=0.0005
 
 python3 -u ./src/experiments/iReflow.py \
     --wandb_project ${STAGE3_WANDB_PROJECT} \
-    --is_training 0 \
+    --is_training 1 \
     --root_path ${ROOT_PATH} \
     --data_path ${DATA_PATH} \
     --model_id ${MODEL_ID} \

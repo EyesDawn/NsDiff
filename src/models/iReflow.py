@@ -258,8 +258,8 @@ class iReflow(nn.Module):
         
         # Stage 2: 采样初始化
         samples = []
-        # x_samples = []
-        # z_samples = []
+        x_samples = []
+        z_samples = []
         
         for _ in range(num_samples):
             # 采样随机噪声
@@ -268,8 +268,8 @@ class iReflow(nn.Module):
             # 初始状态 X_0
             X_tau = self._build_x0(y_hat, sigma, epsilon, temperature=temperature)
 
-            # cur_x_traj = []
-            # cur_z_traj = []
+            cur_x_traj = []
+            cur_z_traj = []
 
             # Stage 3: ODE求解
             if self.num_sampling_steps == 1:
@@ -285,25 +285,29 @@ class iReflow(nn.Module):
                     tau_val = i * dt
                     tau = torch.ones(B, device=device) * tau_val
                     v = self.velocity_net(X_tau, tau, enc_features, y_hat, sigma)
+
+                    z_tau = (X_tau - y_hat) / sigma
+                    cur_z_traj.append(z_tau)
+                    cur_x_traj.append(X_tau)
+
                     # Euler step
                     X_tau = X_tau + v * dt
                 X_pred = X_tau
             
             samples.append(X_pred)
 
-            # cur_z_traj = torch.stack(cur_z_traj, dim=0)
-            # cur_x_traj = torch.stack(cur_x_traj, dim=0)
-            # z_samples.append(cur_z_traj)
-            # x_samples.append(cur_x_traj)
+            cur_z_traj = torch.stack(cur_z_traj, dim=0)
+            cur_x_traj = torch.stack(cur_x_traj, dim=0)
+            z_samples.append(cur_z_traj)
+            x_samples.append(cur_x_traj)
         
         # [num_samples, B, P, D] -> [B, num_samples, P, D]
         samples = torch.stack(samples, dim=1)
 
-        # z_samples = torch.stack(z_samples, dim=2)
-        # x_samples = torch.stack(x_samples, dim=2)
+        z_samples = torch.stack(z_samples, dim=2)
+        x_samples = torch.stack(x_samples, dim=2)
         
-        # return samples, y_hat, sigma, z_samples, x_samples
-        return samples, y_hat, sigma
+        return samples, y_hat, sigma, z_samples, x_samples
     
     def forward(self, x_enc, x_mark_enc, x_dec=None, x_mark_dec=None, y_gt=None, mode='train'):
         """

@@ -25,7 +25,7 @@ E_LAYERS=2
 FLOW_LAYERS=3
 D_FF=128
 DROPOUT=0.1
-USE_RELATIVE_SPACE=False
+USE_RELATIVE_SPACE=True
 
 # 训练配置
 IS_TRAINING=1
@@ -39,6 +39,7 @@ LR_PATIENCE=1
 NUM_SAMPLING_STEPS=5
 TEMPERATURE=1.0
 NUM_SAMPLES=100
+X0_DIST="standard_normal"
 
 # 预测配置
 SEQ_LEN=96
@@ -114,12 +115,13 @@ echo "Stage 3: Training Velocity Network"
 echo "============================================================================"
 echo ""
 
-STAGE3_WANDB_PROJECT="iReflow-Stage3-Velocity-ljl"
+STAGE3_WANDB_PROJECT="iReflow-Stage3-Velocity"
 STAGE3_CHECKPOINTS="./results/runs/iTransformer/"
 STAGE3_LR=0.0001
 
 python3 -u ./src/experiments/iReflow.py \
-    --is_training 0 \
+    --wandb_project ${STAGE3_WANDB_PROJECT} \
+    --is_training 1 \
     --root_path ${ROOT_PATH} \
     --data_path ${DATA_PATH} \
     --model_id ${MODEL_ID} \
@@ -150,6 +152,7 @@ python3 -u ./src/experiments/iReflow.py \
     --num_samples ${NUM_SAMPLES} \
     --device ${DEVICE} \
     --use_relative_space ${USE_RELATIVE_SPACE} \
+    --x0_dist ${X0_DIST} \
     runs --seeds="${SEEDS}"
 
 echo ""

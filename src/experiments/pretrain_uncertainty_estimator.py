@@ -38,6 +38,10 @@ class UncertaintyEstimatorPretrainExp(iReflowExp):
     
     # 覆盖默认配置
     is_training: int = 1  # 固定为1，表示只训练部分模型
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.gaussian_nll_loss = torch.nn.GaussianNLLLoss()
     
     def _init_optimizer(self):
         """
@@ -87,15 +91,12 @@ class UncertaintyEstimatorPretrainExp(iReflowExp):
             loss_dict: dict 包含详细损失和指标
         """
         # 获取编码器特征和预测
-        enc_features, y_hat, sigma = self.model.get_encoder_features(
+        enc_features, y_hat, s, var, sigma = self.model._get_encoder_outputs(
             batch_x, batch_x_date_enc
         )
         
         # 只计算 NLL Loss（Gaussian Negative Log-Likelihood）
-        # NLL = 0.5 * log(sigma^2) + 0.5 * (y_gt - y_hat)^2 / sigma^2
-        var = sigma ** 2
-        nll_loss = 0.5 * torch.log(var + 1e-6) + 0.5 * (batch_y - y_hat)**2 / (var + 1e-6)
-        nll_loss = nll_loss.mean()
+        nll_loss = self.gaussian_nll_loss(y_hat, batch_y, var)
         
         # 记录详细指标
         loss_dict = {
@@ -204,14 +205,12 @@ class UncertaintyEstimatorPretrainExp(iReflowExp):
                 batch_y_date_enc = batch_y_date_enc.to(self.device).float()
                 
                 # 获取预测和 sigma
-                enc_features, y_hat, sigma = self.model.get_encoder_features(
+                enc_features, y_hat, s, var, sigma = self.model._get_encoder_outputs(
                     batch_x, batch_x_date_enc
                 )
                 
                 # 计算 NLL Loss
-                var = sigma ** 2
-                nll_loss = 0.5 * torch.log(var + 1e-6) + 0.5 * (batch_y - y_hat)**2 / (var + 1e-6)
-                nll_loss = nll_loss.mean()
+                nll_loss = self.gaussian_nll_loss(y_hat, batch_y, var)
                 
                 val_losses.append(nll_loss.item())
                 val_metrics['nll_loss'].append(nll_loss.item())

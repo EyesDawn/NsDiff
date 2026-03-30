@@ -221,14 +221,6 @@ class iReflow(nn.Module):
             'max_sigma': sigma.max().item(),
             'mae_point': F.l1_loss(y_hat, y_gt).item()
         }
-
-        # 记录 gate 的均值/方差（来自 VelocityNetwork.confidence_gate）
-        gate_mean = getattr(self.velocity_net, "last_gate_mean", None)
-        gate_var = getattr(self.velocity_net, "last_gate_var", None)
-        if gate_mean is not None:
-            loss_dict["gate_mean"] = float(gate_mean)
-        if gate_var is not None:
-            loss_dict["gate_var"] = float(gate_var)
         
         return total_loss, loss_dict
     

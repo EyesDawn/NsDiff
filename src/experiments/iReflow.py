@@ -167,6 +167,7 @@ class iReflowExp(ProbForecastExp):
         self.model_configs.num_sampling_steps = self.num_sampling_steps
         self.model_configs.x0_dist = self.x0_dist
         # Loss 配置与梯度通路控制
+        self.model_configs.is_training = self.is_training
         self.model_configs.nll_loss_weight = getattr(self, "nll_loss_weight", 1.0)
         self.model_configs.velocity_loss_weight = getattr(self, "velocity_loss_weight", 1.0)
         self.model_configs.use_relative_space = self.use_relative_space
@@ -273,9 +274,7 @@ class iReflowExp(ProbForecastExp):
                 'mean_sigma': [],
                 'min_sigma': [],
                 'max_sigma': [],
-                'mae_point': [],
-                'gate_mean': [],
-                'gate_var': [],
+                'mae_point': []
             }
             
             for i, (
@@ -885,7 +884,7 @@ class iReflowExp(ProbForecastExp):
                 self._freeze_itransformer()
                 self._freeze_uncertainty_estimator()
 
-            self._run_print(f"run : nss{self.num_sampling_steps}_temp{self.temperature} in seed: {seed}")
+            self._run_print(f"run : nss{self.num_sampling_steps}_temp{self.temperature}_invtrans{self.invtrans_loss} in seed: {seed}")
 
             parameter_tables, model_parameters_num = count_parameters(self.model)
             # self._run_print(f"parameter_tables: {parameter_tables}")
@@ -970,7 +969,7 @@ class iReflowExp(ProbForecastExp):
         if self._check_run_exist(seed):
             self._resume_run(seed)
 
-        self._run_print(f"run : nss{self.num_sampling_steps}_temp{self.temperature} in seed: {seed}")
+        self._run_print(f"run : nss{self.num_sampling_steps}_temp{self.temperature}_invtrans{self.invtrans_loss} in seed: {seed}")
 
         parameter_tables, model_parameters_num = count_parameters(self.model)
         self._run_print(f"parameter_tables: {parameter_tables}")

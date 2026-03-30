@@ -20,20 +20,20 @@ class iReflow(nn.Module):
         self.seq_len = configs.seq_len
         self.pred_len = configs.pred_len
         self.d_model = configs.d_model
+        self.is_training = getattr(configs, 'is_training', 2)
         
         # Stage 1: iTransformer as Conditioner
         self.itransformer = iTransformer(configs)
         
         # 不确定性估计器（Aleatoric Uncertainty）
-        # 改进：使用encoder特征和预测残差来估计sigma
+        # 输出内部参数 s = log(sigma^2)
         # 输入：encoder特征 [B, D, d_model]
-        # 输出：sigma [B, D, P] -> [B, P, D]
+        # 输出：s [B, D, P] -> [B, P, D]
         self.uncertainty_estimator = nn.Sequential(
             nn.Linear(configs.d_model, configs.d_model // 2),
             nn.ReLU(),
             # nn.Dropout(configs.dropout if hasattr(configs, 'dropout') else 0.1),
-            nn.Linear(configs.d_model // 2, configs.pred_len),
-            nn.Softplus()  # 确保sigma > 0
+            nn.Linear(configs.d_model // 2, configs.pred_len)
         )
         
         # 初始化：让sigma的初始值更合理（基于预测长度的经验值）
@@ -67,6 +67,7 @@ class iReflow(nn.Module):
         # Loss 权重（默认不改变现有行为）
         self.nll_loss_weight = getattr(configs, 'nll_loss_weight', 1.0)
         self.velocity_loss_weight = getattr(configs, 'velocity_loss_weight', 1.0)
+        self.gaussian_nll_loss = nn.GaussianNLLLoss()
 
     def _build_x0(self, y_hat, sigma, epsilon, temperature=1.0):
         """根据配置构建 Source State X_0。"""
@@ -76,9 +77,9 @@ class iReflow(nn.Module):
         return temperature * epsilon
 
         
-    def get_encoder_features(self, x_enc, x_mark_enc):
+    def _get_encoder_outputs(self, x_enc, x_mark_enc):
         """
-        获取iTransformer编码器的变量特征H
+        获取编码器输出以及 uncertainty_estimator 的分布参数。
         
         Args:
             x_enc: [B, L, D] 历史序列
@@ -86,7 +87,9 @@ class iReflow(nn.Module):
         Returns:
             enc_features: [B, D, d_model] 变量特征（只包含原始变量，不含时间特征）
             y_hat: [B, P, D] 点预测
-            sigma: [B, P, D] 预测不确定性
+            s: [B, P, D] 对数方差 log(sigma^2)
+            var: [B, P, D] 方差
+            sigma: [B, P, D] 标准差
         """
         # 记录原始变量数量（用于过滤协变量）
         B, L, N = x_enc.shape  # N是原始变量数
@@ -124,24 +127,31 @@ class iReflow(nn.Module):
             y_hat = y_hat + means[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1)
         
         # 估计不确定性: [B, D, d_model] -> [B, D, P] -> [B, P, D]
-        sigma = self.uncertainty_estimator(enc_features).permute(0, 2, 1)
-        
-        # 如果使用了归一化，sigma也需要相应缩放
-        # 改进：使用相对标准差，避免sigma过大
+        s = self.uncertainty_estimator(enc_features).permute(0, 2, 1)
+
+        # 如果使用了归一化，在 log-variance 空间完成尺度变换
         if self.itransformer.use_norm:
-            # 使用相对标准差（相对于均值），让sigma更合理
-            # sigma = sigma * stdev[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1)
-            # 改进：使用较小的缩放因子，避免sigma过大
-            relative_std = stdev[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1)
-            # 限制sigma的最大值，避免过大
-            # 确保min和max都是Tensor，形状匹配
-            min_sigma = torch.full_like(sigma, 1e-6)
-            max_sigma = relative_std * 2.0
-            sigma = torch.clamp(sigma * relative_std, min=min_sigma, max=max_sigma)
-        else:
-            # 即使没有归一化，也限制sigma的范围
-            sigma = torch.clamp(sigma, min=1e-6, max=1.0)
+            log_scale = torch.log(stdev[:, 0, :]).unsqueeze(1).expand(-1, self.pred_len, -1)
+            s = s + 2.0 * log_scale
+
+        var = torch.exp(s)
+        sigma = torch.exp(0.5 * s)
+
+        return enc_features, y_hat, s, var, sigma
+
+    def get_encoder_features(self, x_enc, x_mark_enc):
+        """
+        获取iTransformer编码器的变量特征H
         
+        Args:
+            x_enc: [B, L, D] 历史序列
+            x_mark_enc: [B, L, T] 时间标记
+        Returns:
+            enc_features: [B, D, d_model] 变量特征（只包含原始变量，不含时间特征）
+            y_hat: [B, P, D] 点预测
+            sigma: [B, P, D] 预测标准差
+        """
+        enc_features, y_hat, _, _, sigma = self._get_encoder_outputs(x_enc, x_mark_enc)
         return enc_features, y_hat, sigma
     
     def compute_loss(self, x_enc, x_mark_enc, y_gt):
@@ -168,13 +178,11 @@ class iReflow(nn.Module):
         device = y_gt.device
         
         # Stage 1: 获取条件信息，计算负对数似然损失
-        enc_features, y_hat, sigma = self.get_encoder_features(x_enc, x_mark_enc)
-        
-        # Gaussian NLL Loss (防止 Sigma 坍缩为0)
-        # 为了数值稳定，防止除以0
-        # var = sigma ** 2
-        # nll_loss = 0.5 * torch.log(var + 1e-6) + 0.5 * (y_gt - y_hat)**2 / (var + 1e-6)
-        # nll_loss = nll_loss.mean()
+        enc_features, y_hat, s, var, sigma = self._get_encoder_outputs(x_enc, x_mark_enc)
+
+        nll_loss = None
+        if self.is_training == 2:
+            nll_loss = self.gaussian_nll_loss(y_hat, y_gt, var)
 
         # Stage 2: 构建Rectified Flow
         
@@ -208,28 +216,20 @@ class iReflow(nn.Module):
         # MSE Loss on velocity
         velocity_loss = F.mse_loss(v_pred, v_target)
         
-        # total_loss = self.nll_loss_weight * nll_loss + self.velocity_loss_weight * velocity_loss
-        total_loss = velocity_loss
+        total_loss = self.velocity_loss_weight * velocity_loss
+        if nll_loss is not None:
+            total_loss = total_loss + self.nll_loss_weight * nll_loss
 
         loss_dict = {
             'total_loss': total_loss.item(),
             'velocity_loss': velocity_loss.item(),
-            # 'nll_loss': nll_loss.item(),
-            # 'nll_loss_weight': self.nll_loss_weight,
-            # 'velocity_loss_weight': self.velocity_loss_weight,
             'mean_sigma': sigma.mean().item(),
             'min_sigma': sigma.min().item(),
             'max_sigma': sigma.max().item(),
             'mae_point': F.l1_loss(y_hat, y_gt).item()
         }
-
-        # 记录 gate 的均值/方差（来自 VelocityNetwork.confidence_gate）
-        gate_mean = getattr(self.velocity_net, "last_gate_mean", None)
-        gate_var = getattr(self.velocity_net, "last_gate_var", None)
-        if gate_mean is not None:
-            loss_dict["gate_mean"] = float(gate_mean)
-        if gate_var is not None:
-            loss_dict["gate_var"] = float(gate_var)
+        if nll_loss is not None:
+            loss_dict['nll_loss'] = nll_loss.item()
         
         return total_loss, loss_dict
     

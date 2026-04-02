@@ -102,6 +102,7 @@ class iReflowExp(ProbForecastExp):
     num_sampling_steps: int = 1  # ODE求解步数，1表示one-step generation
     temperature: float = 1.0  # 采样温度
     num_samples: int = 100  # 测试时生成的样本数
+    val_num_samples: int = 100  # 验证时用于估计 CRPS 的样本数
     x0_dist: str = 'pred_gaussian'  # X_0 分布: pred_gaussian | standard_normal
     
     # 损失函数
@@ -471,9 +472,9 @@ class iReflowExp(ProbForecastExp):
         return result
     
     def _val(self):
-        """验证：使用较少的样本数以加快验证速度"""
+        """验证：使用固定的采样数来稳定 CRPS 估计。"""
         # 设置验证时使用的样本数
-        self._num_samples_for_eval = min(self.num_samples, 30)
+        self._num_samples_for_eval = min(self.num_samples, self.val_num_samples)
         
         # 计算验证损失（用于学习率调度）
         self.model.eval()
@@ -913,7 +914,6 @@ class iReflowExp(ProbForecastExp):
                 self._run_print(f"Training loss : {train_loss}")
 
                 val_result = self._val()
-                # test_result = self._test()
 
                 self.current_epoch = self.current_epoch + 1
                 
@@ -922,7 +922,7 @@ class iReflowExp(ProbForecastExp):
                 
                 # 学习率调度
                 old_lr = self.model_optim.param_groups[0]['lr']
-                self.scheduler.step(val_result['loss'])
+                self.scheduler.step(val_result['crps'])
                 current_lr = self.model_optim.param_groups[0]['lr']
                 
                 # 记录学习率变化
@@ -939,7 +939,6 @@ class iReflowExp(ProbForecastExp):
                     for key, value in train_metrics.items():
                         wandb.log({f"train_{key}": value}, step=self.current_epoch)
                     wandb.log({f"val_{k}": v for k, v in val_result.items()}, step=self.current_epoch)
-                    # wandb.log({f"test_{k}": v for k, v in test_result.items()}, step=self.current_epoch)
                     wandb.log({'learning_rate': current_lr}, step=self.current_epoch)
 
             self._load_best_model()
@@ -998,7 +997,6 @@ class iReflowExp(ProbForecastExp):
             self._run_print(f"Training loss : {train_loss}")
 
             val_result = self._val()
-            test_result = self._test()
 
             self.current_epoch = self.current_epoch + 1
             
@@ -1007,7 +1005,7 @@ class iReflowExp(ProbForecastExp):
             
             # 学习率调度
             old_lr = self.model_optim.param_groups[0]['lr']
-            self.scheduler.step(val_result['loss'])
+            self.scheduler.step(val_result['crps'])
             current_lr = self.model_optim.param_groups[0]['lr']
             
             # 记录学习率变化
@@ -1024,7 +1022,6 @@ class iReflowExp(ProbForecastExp):
                 for key, value in train_metrics.items():
                     wandb.log({f"train_{key}": value}, step=self.current_epoch)
                 wandb.log({f"val_{k}": v for k, v in val_result.items()}, step=self.current_epoch)
-                wandb.log({f"test_{k}": v for k, v in test_result.items()}, step=self.current_epoch)
                 wandb.log({'learning_rate': current_lr}, step=self.current_epoch)
 
         self._load_best_model()
@@ -1078,7 +1075,7 @@ class iReflowExp(ProbForecastExp):
             
             # 学习率调度（使用验证损失）
             old_lr = self.model_optim.param_groups[0]['lr']
-            self.scheduler.step(val_result['loss'])
+            self.scheduler.step(val_result['crps'])
             current_lr = self.model_optim.param_groups[0]['lr']
             
             # 记录学习率变化

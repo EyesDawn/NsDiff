@@ -308,16 +308,16 @@ class iReflow(nn.Module):
             
             samples.append(X_pred)
 
-            cur_z_traj = torch.stack(cur_z_traj, dim=0)
-            cur_x_traj = torch.stack(cur_x_traj, dim=0)
+            cur_z_traj = torch.stack(cur_z_traj, dim=0) # [num_sampling_steps, B, P, D]
+            cur_x_traj = torch.stack(cur_x_traj, dim=0) # [num_sampling_steps, B, P, D]
             z_samples.append(cur_z_traj)
             x_samples.append(cur_x_traj)
         
         # [num_samples, B, P, D] -> [B, num_samples, P, D]
         samples = torch.stack(samples, dim=1)
 
-        z_samples = torch.stack(z_samples, dim=2)
-        x_samples = torch.stack(x_samples, dim=2)
+        z_samples = torch.stack(z_samples, dim=2) # [num_sampling_steps, B, num_samples, P, D]
+        x_samples = torch.stack(x_samples, dim=2) # [num_sampling_steps, B, num_samples, P, D]
         
         return samples, y_hat, sigma, z_samples, x_samples
     

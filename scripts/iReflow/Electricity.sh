@@ -25,7 +25,7 @@ E_LAYERS=3
 FLOW_LAYERS=3
 D_FF=512
 DROPOUT=0.1
-USE_RELATIVE_SPACE=True
+USE_RELATIVE_SPACE=False
 
 # 训练配置
 BATCH_SIZE=16
@@ -37,7 +37,7 @@ LR_PATIENCE=3
 NUM_SAMPLING_STEPS=5
 TEMPERATURE=1.0
 NUM_SAMPLES=100
-X0_DIST="pred_gaussian"
+X0_DIST="standard_normal"
 
 # 预测配置
 SEQ_LEN=96
@@ -45,11 +45,11 @@ PRED_LEN=192
 HORIZON=1
 
 # 设备配置
-GPU_ID=0
+GPU_ID=2
 export CUDA_VISIBLE_DEVICES=${GPU_ID}
 DEVICE="cuda:0"
 
-SEEDS='[1]'
+SEEDS='[2205]'
 CHECKPOINTS="./results/runs/iTransformer/"
 ITR=1
 
@@ -61,7 +61,7 @@ echo "Stage 2: Pretraining Uncertainty Estimator"
 echo "============================================================================"
 echo ""
 
-STAGE2_WANDB_PROJECT="iReflow-Stage2-Uncertainty-logvar"
+STAGE2_WANDB_PROJECT="iReflow-Stage2-Uncertainty"
 STAGE2_CHECKPOINTS="./results/runs/iTransformer/"
 STAGE2_LR=0.0001
 
@@ -112,7 +112,7 @@ echo "Stage 3: Training Velocity Network"
 echo "============================================================================"
 echo ""
 
-STAGE3_WANDB_PROJECT="iReflow-Stage3-Velocity-logvar"
+STAGE3_WANDB_PROJECT="iReflow-Stage3-Velocity"
 STAGE3_CHECKPOINTS="./results/runs/iTransformer/"
 STAGE3_LR=0.0001
 

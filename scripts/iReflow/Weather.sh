@@ -33,7 +33,7 @@ BATCH_SIZE=32
 LEARNING_RATE=0.0001
 EPOCHS=40
 PATIENCE=8
-LR_PATIENCE=3
+LR_PATIENCE=2
 
 # Flow配置
 NUM_SAMPLING_STEPS=5
@@ -51,7 +51,7 @@ GPU_ID=0
 export CUDA_VISIBLE_DEVICES=${GPU_ID}
 DEVICE="cuda:0"
 
-SEEDS='[2220, 2221]'
+SEEDS='[2205]'
 CHECKPOINTS="./results/runs/iTransformer/"
 ITR=1
 
@@ -94,7 +94,7 @@ python3 -u ./src/experiments/pretrain_uncertainty_estimator.py \
     --dropout ${DROPOUT} \
     --epochs 30 \
     --patience 6 \
-    --lr_patience 2 \
+    --lr_patience 1 \
     --num_sampling_steps 1 \
     --temperature 1.0 \
     --num_samples 100 \

@@ -91,12 +91,12 @@ class UncertaintyEstimatorPretrainExp(iReflowExp):
             loss_dict: dict 包含详细损失和指标
         """
         # 获取编码器特征和预测
-        enc_features, y_hat, s, var, sigma = self.model._get_encoder_outputs(
+        _, y_hat, sigma = self.model.get_encoder_features(
             batch_x, batch_x_date_enc
         )
         
         # 只计算 NLL Loss（Gaussian Negative Log-Likelihood）
-        nll_loss = self.gaussian_nll_loss(y_hat, batch_y, var)
+        nll_loss = self.gaussian_nll_loss(y_hat, batch_y, sigma.pow(2))
         
         # 记录详细指标
         loss_dict = {
@@ -205,12 +205,12 @@ class UncertaintyEstimatorPretrainExp(iReflowExp):
                 batch_y_date_enc = batch_y_date_enc.to(self.device).float()
                 
                 # 获取预测和 sigma
-                enc_features, y_hat, s, var, sigma = self.model._get_encoder_outputs(
+                _, y_hat, sigma = self.model.get_encoder_features(
                     batch_x, batch_x_date_enc
                 )
                 
-                # 计算 NLL Loss
-                nll_loss = self.gaussian_nll_loss(y_hat, batch_y, var)
+                # 计算 NLL Loss（与训练阶段保持一致）
+                nll_loss = self.gaussian_nll_loss(y_hat, batch_y, sigma.pow(2))
                 
                 val_losses.append(nll_loss.item())
                 val_metrics['nll_loss'].append(nll_loss.item())

@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -26,23 +27,31 @@ class iReflow(nn.Module):
         self.itransformer = iTransformer(configs)
         
         # 不确定性估计器（Aleatoric Uncertainty）
-        # 输出内部参数 s = log(sigma^2)
+        # 直接输出 sigma（标准差）
         # 输入：encoder特征 [B, D, d_model]
-        # 输出：s [B, D, P] -> [B, P, D]
+        # 输出：sigma [B, D, P] -> [B, P, D]
         self.uncertainty_estimator = nn.Sequential(
             nn.Linear(configs.d_model, configs.d_model // 2),
-            nn.ReLU(),
+            nn.GELU(),
+            nn.LayerNorm(configs.d_model // 2),
             # nn.Dropout(configs.dropout if hasattr(configs, 'dropout') else 0.1),
-            nn.Linear(configs.d_model // 2, configs.pred_len)
+            nn.Linear(configs.d_model // 2, configs.pred_len),
+            nn.Softplus()
         )
         
         # 初始化：让sigma的初始值更合理（基于预测长度的经验值）
         # 使用较小的初始值，避免sigma过大导致训练不稳定
+        init_sigma = max(float(getattr(configs, 'sigma_init', 0.1)), 1e-6)
         for m in self.uncertainty_estimator.modules():
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight, gain=0.1)  # 较小的gain，让sigma初始值较小
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0.0)
+        # 仅调整最后一层 bias，使 Softplus(bias) ≈ init_sigma
+        last_linear = self.uncertainty_estimator[-2]
+        if isinstance(last_linear, nn.Linear) and last_linear.bias is not None:
+            sigma_bias = math.log(math.expm1(init_sigma))
+            nn.init.constant_(last_linear.bias, sigma_bias)
         
         # Stage 2: Velocity Network as Generator
         self.velocity_net = VelocityNetwork(
@@ -87,7 +96,7 @@ class iReflow(nn.Module):
         Returns:
             enc_features: [B, D, d_model] 变量特征（只包含原始变量，不含时间特征）
             y_hat: [B, P, D] 点预测
-            s: [B, P, D] 对数方差 log(sigma^2)
+            s: [B, P, D] 对数方差 log(sigma^2)（由 sigma 派生，兼容旧接口）
             var: [B, P, D] 方差
             sigma: [B, P, D] 标准差
         """
@@ -127,15 +136,18 @@ class iReflow(nn.Module):
             y_hat = y_hat + means[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1)
         
         # 估计不确定性: [B, D, d_model] -> [B, D, P] -> [B, P, D]
-        s = self.uncertainty_estimator(enc_features).permute(0, 2, 1)
+        sigma = self.uncertainty_estimator(enc_features).permute(0, 2, 1)
 
-        # 如果使用了归一化，在 log-variance 空间完成尺度变换
+        # 如果使用了归一化，在 sigma 空间完成尺度变换
         if self.itransformer.use_norm:
-            log_scale = torch.log(stdev[:, 0, :]).unsqueeze(1).expand(-1, self.pred_len, -1)
-            s = s + 2.0 * log_scale
-
-        var = torch.exp(s)
-        sigma = torch.exp(0.5 * s)
+            scale = stdev[:, 0, :].unsqueeze(1).expand(-1, self.pred_len, -1)
+            sigma = sigma * scale
+            min_sigma = torch.full_like(sigma, 1e-3)
+            sigma = torch.clamp(sigma, min=min_sigma, max=2.0 * scale)
+        else:
+            sigma = torch.clamp(sigma, min=1e-3)
+        var = sigma.pow(2)
+        s = torch.log(var)
 
         return enc_features, y_hat, s, var, sigma
 
@@ -178,11 +190,11 @@ class iReflow(nn.Module):
         device = y_gt.device
         
         # Stage 1: 获取条件信息，计算负对数似然损失
-        enc_features, y_hat, s, var, sigma = self._get_encoder_outputs(x_enc, x_mark_enc)
+        enc_features, y_hat, sigma = self.get_encoder_features(x_enc, x_mark_enc)
 
         nll_loss = None
         if self.is_training == 2:
-            nll_loss = self.gaussian_nll_loss(y_hat, y_gt, var)
+            nll_loss = self.gaussian_nll_loss(y_hat, y_gt, sigma.pow(2))
 
         # Stage 2: 构建Rectified Flow
         

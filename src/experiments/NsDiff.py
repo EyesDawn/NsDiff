@@ -31,6 +31,31 @@ from tqdm import tqdm
 import concurrent.futures
 from types import SimpleNamespace
 from src.utils.sigma import wv_sigma, wv_sigma_trailing
+
+
+def resolve_pretrained_checkpoint(group, dataset_type, windows, pred_len):
+    base_dir = os.path.join(
+        ".", "results", "runs", group, dataset_type, f"w{windows}h1s{pred_len}"
+    )
+    if not os.path.isdir(base_dir):
+        raise FileNotFoundError(
+            f"Pretrained directory does not exist: {base_dir}"
+        )
+
+    candidates = []
+    for run_name in sorted(os.listdir(base_dir), key=lambda name: int(name) if name.isdigit() else name):
+        checkpoint_path = os.path.join(base_dir, run_name, "best_model.pth")
+        if os.path.isfile(checkpoint_path):
+            candidates.append(checkpoint_path)
+
+    if not candidates:
+        raise FileNotFoundError(
+            f"No pretrained checkpoint found under {base_dir}"
+        )
+
+    return candidates[-1]
+
+
 def dict2namespace(config):
     namespace = argparse.Namespace()
     for key, value in config.items():
@@ -157,8 +182,12 @@ class NsDiffForecast(ProbForecastExp, NsDiffParameters):
         self.cond_pred_model_g = G.SigmaEstimation(self.windows, self.pred_len, self.dataset.num_features, 512, self.rolling_length).float().to(self.device)
         
         if self.load_pretrain:
-            model_f_path = f"./results/runs/F/{self.dataset_type}/w{self.windows}h1s{self.pred_len}/2/best_model.pth"
-            model_g_path = f"./results/runs/G/{self.dataset_type}/w{self.windows}h1s{self.pred_len}/1/best_model.pth"
+            model_f_path = resolve_pretrained_checkpoint(
+                "F", self.dataset_type, self.windows, self.pred_len
+            )
+            model_g_path = resolve_pretrained_checkpoint(
+                "G", self.dataset_type, self.windows, self.pred_len
+            )
             print("using pretrained model...")
             print(f"f(x): {model_f_path}")
             print(f"g(x): {model_g_path}")

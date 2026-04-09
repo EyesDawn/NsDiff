@@ -27,6 +27,12 @@ class SigmaEstimation(nn.Module):
         self.seq_len = seq_len
         self.enc_in = enc_in
         self.hidden_size = hidden_size
+        if kernel_size >= seq_len:
+            raise ValueError(
+                "SigmaEstimation requires rolling_length/kernel_size to be "
+                f"smaller than windows/seq_len, but got kernel_size={kernel_size} "
+                f"and seq_len={seq_len}."
+            )
         
         
         # Define 2-layer MLP for predicting future sigmas

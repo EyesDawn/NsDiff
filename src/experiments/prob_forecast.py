@@ -256,7 +256,7 @@ class ProbForecastExp(ForecastExp):
 
     def _test(self) -> Dict[str, float]:
         print("Testing .... ")
-        test_result = self._evaluate(self.test_loader, plot=False)
+        test_result = self._evaluate(self.test_loader)
 
         # if self._use_wandb():
         #     import wandb

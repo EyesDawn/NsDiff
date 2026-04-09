@@ -1,12 +1,23 @@
+#!/bin/bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+cd "$REPO_ROOT"
 export PYTHONPATH=./
+SEEDS="${SEEDS:-[1,2,3]}"
+PRETRAIN_G_EPOCHS="${PRETRAIN_G_EPOCHS:-${PRETRAIN_EPOCHS:-20}}"
+PRETRAIN_G_PATIENCE="${PRETRAIN_G_PATIENCE:-${PRETRAIN_PATIENCE:-5}}"
+
 CUDA_DEVICE_ORDER=PCI_BUS_ID \
 python3 ./src/experiments/pretrain_g.py \
-   --dataset_type="ETTh1" \
-   --device="cuda:0" \
+   --dataset_type="ETTh2" \
+   --device="cuda:5" \
    --batch_size=32 \
    --horizon=1 \
    --pred_len=192 \
-   --windows=168 \
-   --epochs=20 \
-   --patience=5 \
-   runs --seeds='[1]'
+   --windows=92 \
+   --epochs="$PRETRAIN_G_EPOCHS" \
+   --patience="$PRETRAIN_G_PATIENCE" \
+   runs --seeds="$SEEDS"

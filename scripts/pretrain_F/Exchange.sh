@@ -5,21 +5,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 cd "$REPO_ROOT"
-export PYTHONPATH=./:/notebooks/pytorchtimseries
+export PYTHONPATH=./
 SEEDS="${SEEDS:-[1,2,3]}"
-EPOCHS="${EPOCHS:-50}"
-PATIENCE="${PATIENCE:-10}"
-NUM_SAMPLES="${NUM_SAMPLES:-100}"
+PRETRAIN_F_EPOCHS="${PRETRAIN_F_EPOCHS:-${PRETRAIN_EPOCHS:-50}}"
+PRETRAIN_F_PATIENCE="${PRETRAIN_F_PATIENCE:-${PRETRAIN_PATIENCE:-10}}"
 
 CUDA_DEVICE_ORDER=PCI_BUS_ID \
-python3 ./src/experiments/TimeGrad.py \
+python3 ./src/experiments/pretrain_f.py \
    --dataset_type="ExchangeRate" \
    --device="cuda:6" \
    --batch_size=32 \
    --horizon=1 \
    --pred_len=192 \
    --windows=92 \
-   --epochs="$EPOCHS" \
-   --patience="$PATIENCE" \
-   --num_samples="$NUM_SAMPLES" \
+   --epochs="$PRETRAIN_F_EPOCHS" \
+   --patience="$PRETRAIN_F_PATIENCE" \
    runs --seeds="$SEEDS"

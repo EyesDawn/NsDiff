@@ -31,14 +31,15 @@ USE_RELATIVE_SPACE=True
 IS_TRAINING=1
 BATCH_SIZE=32
 LEARNING_RATE=0.0001
-EPOCHS=20
-PATIENCE=6
-LR_PATIENCE=1
+EPOCHS=40
+PATIENCE=8
+LR_PATIENCE=3
 
 # Flow配置
 NUM_SAMPLING_STEPS=5
 TEMPERATURE=1.0
 NUM_SAMPLES=100
+X0_DIST="pred_gaussian"
 
 # 预测配置
 SEQ_LEN=96
@@ -51,7 +52,7 @@ export CUDA_VISIBLE_DEVICES=${GPU_ID}
 DEVICE="cuda:0"
 
 # 实验配置
-SEEDS='[2221]'
+SEEDS='[2224, 2225]'
 CHECKPOINTS="./results/runs/iTransformer/"
 ITR=1
 
@@ -63,7 +64,7 @@ echo "Stage 2: Pretraining Uncertainty Estimator"
 echo "============================================================================"
 echo ""
 
-STAGE2_WANDB_PROJECT="iReflow-Stage2-Uncertainty"
+STAGE2_WANDB_PROJECT="iReflow-Stage2-Uncertainty-logvar"
 STAGE2_CHECKPOINTS="./results/runs/iTransformer/"
 STAGE2_LR=0.0001
 
@@ -92,8 +93,8 @@ python3 -u ./src/experiments/pretrain_uncertainty_estimator.py \
     --flow_layers ${FLOW_LAYERS} \
     --n_heads ${N_HEADS} \
     --dropout ${DROPOUT} \
-    --epochs 10 \
-    --patience 3 \
+    --epochs 20 \
+    --patience 6 \
     --lr_patience 1 \
     --num_sampling_steps 1 \
     --temperature 1.0 \
@@ -114,7 +115,7 @@ echo "Stage 3: Training Velocity Network"
 echo "============================================================================"
 echo ""
 
-STAGE3_WANDB_PROJECT="iReflow-Stage3-Velocity"
+STAGE3_WANDB_PROJECT="iReflow-Stage3-Velocity-logvar"
 STAGE3_CHECKPOINTS="./results/runs/iTransformer/"
 STAGE3_LR=0.0001
 
@@ -151,6 +152,7 @@ python3 -u ./src/experiments/iReflow.py \
     --num_samples ${NUM_SAMPLES} \
     --device ${DEVICE} \
     --use_relative_space ${USE_RELATIVE_SPACE} \
+    --x0_dist ${X0_DIST} \
     runs --seeds="${SEEDS}"
 
 echo ""

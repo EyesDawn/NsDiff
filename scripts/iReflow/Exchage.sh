@@ -1,23 +1,24 @@
 #!/bin/bash
+set -e
 
-# iReflow运行脚本 - ETTm1数据集
+# iReflow运行脚本 - ExchangeRate数据集
 # 使用Rectified Flow进行概率时间序列预测
 
 export PYTHONPATH=./
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 
 # 数据集配置
-DATASET="ETTm1"
-DATA_PATH="ETTm1/ETTm1.csv"
+DATASET="ExchangeRate"
+DATA_PATH="ExchangeRate/exchange_rate.csv"
 ROOT_PATH="./data/"
 
 # 模型配置
-MODEL_ID="ETTm1_96_192"
+MODEL_ID="Exchange_96_192"
 MODEL_NAME="iReflow"
 D_FEATURES="M"
-ENC_IN=7
-DEC_IN=7
-C_OUT=7
+ENC_IN=8
+DEC_IN=8
+C_OUT=8
 DES="Exp"
 D_MODEL=128
 N_HEADS=8
@@ -30,6 +31,7 @@ USE_RELATIVE_SPACE=True
 # 训练配置
 IS_TRAINING=1
 BATCH_SIZE=32
+LEARNING_RATE=0.0001
 EPOCHS=40
 PATIENCE=8
 LR_PATIENCE=3
@@ -50,7 +52,8 @@ GPU_ID=0
 export CUDA_VISIBLE_DEVICES=${GPU_ID}
 DEVICE="cuda:0"
 
-SEEDS='[2222]'
+# 实验配置
+SEEDS='[2224, 2225]'
 CHECKPOINTS="./results/runs/iTransformer/"
 ITR=1
 
@@ -118,8 +121,8 @@ STAGE3_CHECKPOINTS="./results/runs/iTransformer/"
 STAGE3_LR=0.0001
 
 python3 -u ./src/experiments/iReflow.py \
-    --is_training 1 \
     --wandb_project ${STAGE3_WANDB_PROJECT} \
+    --is_training 1 \
     --root_path ${ROOT_PATH} \
     --data_path ${DATA_PATH} \
     --model_id ${MODEL_ID} \

@@ -1,7 +1,7 @@
 export PYTHONPATH=./:/notebooks/pytorchtimseries
 CUDA_DEVICE_ORDER=PCI_BUS_ID \
 python3 ./src/experiments/TimeGrad.py \
-   --dataset_type="ETTh1 " \
+   --dataset_type="ExchangeRate " \
    --device="cuda:4" \
    --batch_size=32 \
    --horizon=1 \

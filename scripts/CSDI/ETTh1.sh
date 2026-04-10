@@ -6,15 +6,16 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 cd "$REPO_ROOT"
 export PYTHONPATH=./
-SEEDS="${SEEDS:-[1,2,3]}"
-EPOCHS="${EPOCHS:-50}"
+SEEDS="${SEEDS:-[1,2]}"
+EPOCHS="${EPOCHS:-40}"
 PATIENCE="${PATIENCE:-10}"
-NUM_SAMPLES="${NUM_SAMPLES:-100}"
+NUM_SAMPLES="${NUM_SAMPLES:-50}"
+DEVICE="${DEVICE:-cuda:0}"
 
 CUDA_DEVICE_ORDER=PCI_BUS_ID \
 python3 ./src/experiments/CSDI.py \
    --dataset_type="ETTh1" \
-   --device="cuda:4" \
+   --device="$DEVICE" \
    --batch_size=32 \
    --horizon=1 \
    --pred_len=192 \

@@ -25,7 +25,7 @@ E_LAYERS=2
 FLOW_LAYERS=3
 D_FF=128
 DROPOUT=0.1
-USE_RELATIVE_SPACE=False
+USE_RELATIVE_SPACE=True
 
 # 训练配置
 IS_TRAINING=1
@@ -33,13 +33,13 @@ BATCH_SIZE=32
 LEARNING_RATE=0.0001
 EPOCHS=40
 PATIENCE=8
-LR_PATIENCE=3
+LR_PATIENCE=2
 
 # Flow配置
 NUM_SAMPLING_STEPS=5
 TEMPERATURE=1.0
 NUM_SAMPLES=100
-X0_DIST="standard_normal"
+X0_DIST="pred_gaussian"
 
 # 预测配置
 SEQ_LEN=96
@@ -47,12 +47,12 @@ PRED_LEN=192
 HORIZON=1
 
 # 设备配置
-GPU_ID=2
+GPU_ID=0
 export CUDA_VISIBLE_DEVICES=${GPU_ID}
 DEVICE="cuda:0"
 
 # 实验配置
-SEEDS='[2222]'
+SEEDS='[2210]'
 CHECKPOINTS="./results/runs/iTransformer/"
 ITR=1
 
@@ -93,8 +93,8 @@ python3 -u ./src/experiments/pretrain_uncertainty_estimator.py \
     --flow_layers ${FLOW_LAYERS} \
     --n_heads ${N_HEADS} \
     --dropout ${DROPOUT} \
-    --epochs 10 \
-    --patience 3 \
+    --epochs 20 \
+    --patience 6 \
     --lr_patience 1 \
     --num_sampling_steps 1 \
     --temperature 1.0 \

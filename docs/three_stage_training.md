@@ -42,7 +42,7 @@ Stage 3: 流匹配 (Flow Matching)
 
 **实现**:
 - 使用 `iTransformer.py` 进行训练
-- 或使用 `iReflow.py` 的 `is_training=2` 模式端到端训练
+- 或使用 `iReflow.py` 的 `is_training=2` 模式进行联合训练
 
 **保存位置**:
 ```
@@ -75,7 +75,7 @@ python3 -u ./src/experiments/pretrain_uncertainty_estimator.py \
 
 **保存位置**:
 ```
-./results/runs/iReflow/{dataset}/{setting}/seed_{seed}/best_model.pth
+./results/runs/estimator/{dataset}/{setting}/seed_{seed}/best_model.pth
 ```
 
 ### Stage 3: 训练速度网络
@@ -105,7 +105,7 @@ python3 -u ./src/experiments/iReflow.py \
 
 **保存位置**:
 ```
-./results/runs/iReflow/{dataset}/{setting}/seed_{seed}/best_model.pth
+./results/runs/iReflow/{dataset}/{hash}/train_mode_1/best_model.pth
 ```
 
 ## 训练模式说明
@@ -118,6 +118,7 @@ python3 -u ./src/experiments/iReflow.py \
 ```
 - 不训练任何模型
 - 只加载已保存的完整权重并进行测试评估
+- 若 `train_mode_1` 和 `train_mode_2` 同时存在，需额外指定 `--checkpoint_mode_for_test 1` 或 `--checkpoint_mode_for_test 2`
 
 ### is_training=1: Stage 3 训练
 ```python
@@ -134,6 +135,8 @@ python3 -u ./src/experiments/iReflow.py \
 --is_training 2
 ```
 - 训练整个模型：`iTransformer + uncertainty_estimator + velocity_net`
+- Loss: `point_loss_weight * MSE(y_hat, y_gt) + nll_loss_weight * GaussianNLL + velocity_loss_weight * Velocity_MSE`
+- 端到端模式下，Flow Loss 不再对 `y_hat/sigma` 做 `detach()`，三部分参数会联合优化
 - 适合快速实验或对比基线
 
 ## 完整训练示例
@@ -225,11 +228,12 @@ python3 -u ./src/experiments/iReflow.py \
 
 `iReflow.py` (is_training=1) 会加载：
 - **iTransformer**: `{checkpoints}/{setting}/checkpoint.pth`
-- **Uncertainty Estimator**: `{run_save_dir}/best_model.pth`
+- **Uncertainty Estimator**: `./results/runs/estimator/{dataset}/{setting}/seed_{seed}/best_model.pth`
 
-其中 `run_save_dir` 的格式为：
+`iReflow.py` 的训练结果目录按模式隔离：
 ```
-{save_dir}/runs/{model_type}/{dataset}/{setting}/seed_{seed}/
+{save_dir}/runs/{model_type}/{dataset}/w{windows}h{horizon}s{pred_len}/{hash}/train_mode_1/
+{save_dir}/runs/{model_type}/{dataset}/w{windows}h{horizon}s{pred_len}/{hash}/train_mode_2/
 ```
 
 ## 验证训练效果
@@ -248,6 +252,11 @@ python3 -u ./src/experiments/iReflow.py \
 - 观察生成样本的质量（CRPS, Coverage, Sharpness）
 - 对比 is_training=2 端到端训练的结果
 
+### is_training=2 验证
+- 检查 `point_loss`、`nll_loss` 和 `velocity_loss` 是否同时收敛
+- 检查点预测 MAE/MSE 是否没有因 Flow Loss 明显退化
+- 对比 `train_mode_1` 与 `train_mode_2` 的 CRPS/coverage/sharpness
+
 ## 常见问题
 
 ### Q1: 为什么 Stage 2 找不到 iTransformer 权重？
@@ -259,20 +268,30 @@ python3 -u ./src/experiments/iReflow.py \
 ### Q2: 为什么 Stage 3 找不到 Uncertainty Estimator 权重？
 **A**: 确保 Stage 2 已经完成训练，并且权重保存在：
 ```
-./results/runs/iReflow/{dataset}/{setting}/seed_{seed}/best_model.pth
+./results/runs/estimator/{dataset}/{setting}/seed_{seed}/best_model.pth
 ```
 
-### Q3: 三阶段训练和端到端训练（is_training=2）哪个更好？
+### Q3: 为什么 is_training=0 测试时报 checkpoint 歧义？
+**A**: `is_training=1` 和 `is_training=2` 现在分别保存在 `train_mode_1/` 与 `train_mode_2/`。如果两个目录都存在，请显式指定：
+```bash
+--checkpoint_mode_for_test 1
+```
+或
+```bash
+--checkpoint_mode_for_test 2
+```
+
+### Q4: 三阶段训练和端到端训练（is_training=2）哪个更好？
 **A**: 
 - **三阶段训练**: 更稳定，每个组件训练得更充分，通常性能更好
-- **端到端训练**: 更快速，适合快速实验和消融研究
+- **端到端训练**: 更快速，且现在会联合优化点预测、sigma 和 flow，适合快速实验和消融研究
 
-### Q4: 可以跳过某个阶段吗？
+### Q5: 可以跳过某个阶段吗？
 **A**: 不建议。每个阶段都依赖前一阶段的输出：
 - Stage 2 需要 Stage 1 的 iTransformer
 - Stage 3 需要 Stage 1 的 iTransformer 和 Stage 2 的 Uncertainty Estimator
 
-### Q5: 如何调整各阶段的学习率？
+### Q6: 如何调整各阶段的学习率？
 **A**: 建议：
 - Stage 1 (iTransformer): `lr=0.0001`
 - Stage 2 (Uncertainty): `lr=0.0005`
@@ -290,7 +309,11 @@ python3 -u ./src/experiments/iReflow.py \
   - 修改 `_init_optimizer()`: is_training=1 只优化 velocity_net
   - 新增 `_freeze_uncertainty_estimator()`: 冻结 uncertainty_estimator
   - 新增 `_load_uncertainty_estimator()`: 加载预训练的 uncertainty_estimator
-  - 修改 `run()`: is_training=1 加载 iTransformer 和 uncertainty_estimator
+  - 修改 `run()`: 训练结果按 `train_mode_1` / `train_mode_2` 分目录保存，测试时支持 `checkpoint_mode_for_test`
+  - 新增 `point_loss_weight / nll_loss_weight / velocity_loss_weight`
+- `src/models/iReflow.py`:
+  - 修改 `compute_loss()`: is_training=2 联合优化 `MSE + NLL + Velocity_MSE`
+  - 修改 `sample()`: 修复 `num_sampling_steps=1` 时 one-step 采样崩溃
 
 ## 总结
 
@@ -302,4 +325,3 @@ python3 -u ./src/experiments/iReflow.py \
 4. ✅ **灵活性**: 可以独立调整每个阶段的超参数
 
 **建议的训练顺序**: Stage 1 → Stage 2 → Stage 3 → 测试评估
-

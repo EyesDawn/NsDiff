@@ -3,7 +3,7 @@ iReflow实验脚本
 用于训练和评估iReflow模型
 """
 from dataclasses import dataclass, field
-from typing import List, Dict
+from typing import List, Dict, Optional
 import os
 import torch
 from dataclasses import dataclass, asdict, field
@@ -97,6 +97,10 @@ class iReflowExp(ProbForecastExp):
     num_worker: int = 1
     patience: int = 10
     lr_patience: int = 1  # 学习率调度器的patience
+    point_loss_weight: float = 1.0
+    nll_loss_weight: float = 1.0
+    velocity_loss_weight: float = 1.0
+    checkpoint_mode_for_test: Optional[int] = None
     
     # Flow配置
     num_sampling_steps: int = 1  # ODE求解步数，1表示one-step generation
@@ -169,8 +173,9 @@ class iReflowExp(ProbForecastExp):
         self.model_configs.x0_dist = self.x0_dist
         # Loss 配置与梯度通路控制
         self.model_configs.is_training = self.is_training
-        self.model_configs.nll_loss_weight = getattr(self, "nll_loss_weight", 1.0)
-        self.model_configs.velocity_loss_weight = getattr(self, "velocity_loss_weight", 1.0)
+        self.model_configs.point_loss_weight = self.point_loss_weight
+        self.model_configs.nll_loss_weight = self.nll_loss_weight
+        self.model_configs.velocity_loss_weight = self.velocity_loss_weight
         self.model_configs.use_relative_space = self.use_relative_space
     
     def _init_model(self):
@@ -270,12 +275,14 @@ class iReflowExp(ProbForecastExp):
             # 收集所有批次的详细指标
             train_metrics = {
                 'total_loss': [],
+                'point_loss': [],
                 'velocity_loss': [],
                 'nll_loss': [],
                 'mean_sigma': [],
                 'min_sigma': [],
                 'max_sigma': [],
-                'mae_point': []
+                'mae_point': [],
+                'mse_point': [],
             }
             
             for i, (
@@ -348,7 +355,7 @@ class iReflowExp(ProbForecastExp):
         num_samples = getattr(self, '_num_samples_for_eval', self.num_samples)
         
         # 生成样本
-        samples, y_hat, sigma = self.model.forecast(
+        samples, y_hat, sigma, _, _ = self.model.forecast(
             x_enc=batch_x,
             x_mark_enc=batch_x_date_enc,
             num_samples=num_samples,
@@ -459,7 +466,8 @@ class iReflowExp(ProbForecastExp):
                         # x = x_samples[0,:,:,-1].detach().cpu().numpy()
                         # zx_visual(z,x, name=os.path.join(os.path.join('./plot_results', self.dataset_type), str(i) + '_std' + '.pdf'))
 
-                        for j in range(5):
+                        max_plot_steps = min(5, z_samples.shape[0])
+                        for j in range(max_plot_steps):
                             z = z_samples[j,0,:,:,-1].detach().cpu().numpy()
                             x = x_samples[j,0,:,:,-1].detach().cpu().numpy()
                             zx_visual(z,x, name=os.path.join(os.path.join('./plot_results', self.dataset_type), str(i) + '_std' + str(j) + '.pdf'))
@@ -511,6 +519,7 @@ class iReflowExp(ProbForecastExp):
     _run_irrelevant_fields = {
         'is_training',   # 训练/测试模式切换，is_training=0 需要能找到 is_training=1 训练出的模型
         'wandb_project', # 日志项目名，不影响实验结果
+        'checkpoint_mode_for_test', # 仅影响测试时从哪个训练模式目录加载
     }
 
     @property
@@ -761,15 +770,69 @@ class iReflowExp(ProbForecastExp):
                 print(f'Warning: Unexpected keys: {unexpected_keys[:5]}...' if len(unexpected_keys) > 5 else f'Warning: Unexpected keys: {unexpected_keys}')
             
             print('iTransformer weights extracted successfully.')
+
+    def _set_mode_specific_run_paths(self, mode: int):
+        """将训练/测试产物重定向到 train_mode_{mode} 子目录。"""
+        if mode not in (1, 2):
+            raise ValueError(f"Unsupported mode for checkpoint paths: {mode}. Expected 1 or 2.")
+
+        base_run_dir = getattr(self, "_base_run_save_dir", self.run_save_dir)
+        self._base_run_save_dir = base_run_dir
+        self.run_save_dir = os.path.join(base_run_dir, f"train_mode_{mode}")
+        self.run_checkpoint_filepath = os.path.join(self.run_save_dir, "run_checkpoint.pth")
+        self.best_checkpoint_filepath = os.path.join(self.run_save_dir, "best_model.pth")
+
+        if hasattr(self, "early_stopping") and hasattr(self.early_stopping, "path"):
+            self.early_stopping.path = self.best_checkpoint_filepath
+
+    def _resolve_test_checkpoint_mode(self) -> int:
+        """解析 is_training=0 时应该加载哪个训练模式的最佳模型。"""
+        requested_mode = self.checkpoint_mode_for_test
+        base_run_dir = getattr(self, "_base_run_save_dir", self.run_save_dir)
+
+        if requested_mode is not None:
+            if requested_mode not in (1, 2):
+                raise ValueError(
+                    f"Invalid checkpoint_mode_for_test={requested_mode}. Expected 1 or 2."
+                )
+            requested_best_model = os.path.join(
+                base_run_dir, f"train_mode_{requested_mode}", "best_model.pth"
+            )
+            if not os.path.exists(requested_best_model):
+                raise FileNotFoundError(
+                    f"Requested test checkpoint mode {requested_mode} not found at {requested_best_model}."
+                )
+            return requested_mode
+
+        available_modes = []
+        for mode in (1, 2):
+            best_model_path = os.path.join(
+                base_run_dir, f"train_mode_{mode}", "best_model.pth"
+            )
+            if os.path.exists(best_model_path):
+                available_modes.append(mode)
+
+        if len(available_modes) == 1:
+            return available_modes[0]
+        if len(available_modes) == 0:
+            raise FileNotFoundError(
+                "No trained iReflow checkpoint found for testing. "
+                f"Searched under {os.path.join(base_run_dir, 'train_mode_1')} and "
+                f"{os.path.join(base_run_dir, 'train_mode_2')}."
+            )
+
+        raise ValueError(
+            "Multiple trained iReflow checkpoints found for testing. "
+            "Please set checkpoint_mode_for_test=1 or checkpoint_mode_for_test=2 explicitly."
+        )
     
     
     def _resume_run(self, seed):
         """恢复运行检查点（重写父类方法以支持调度器状态恢复）"""
-        run_checkpoint_filepath = os.path.join(self.run_save_dir, f"run_checkpoint.pth")
-        print(f"resuming from {run_checkpoint_filepath}")
+        print(f"resuming from {self.run_checkpoint_filepath}")
 
         # torch.serialization.add_safe_globals([np.core.multiarray.scalar])
-        check_point = torch.load(run_checkpoint_filepath, map_location=self.device, weights_only=False)
+        check_point = torch.load(self.run_checkpoint_filepath, map_location=self.device, weights_only=False)
 
         self.model.load_state_dict(check_point["model"])
         self.model_optim.load_state_dict(check_point["optimizer"])
@@ -836,6 +899,9 @@ class iReflowExp(ProbForecastExp):
             
             # 需要先 setup_run 以初始化必要的路径和配置
             self._setup_run(seed)
+            self._base_run_save_dir = self.run_save_dir
+            resolved_mode = self._resolve_test_checkpoint_mode()
+            self._set_mode_specific_run_paths(resolved_mode)
             
             # 加载已训练好的 iReflow 模型（best_model.pth 由训练阶段保存）
             if not os.path.exists(self.best_checkpoint_filepath):
@@ -843,7 +909,7 @@ class iReflowExp(ProbForecastExp):
                     f"iReflow best model not found at {self.best_checkpoint_filepath}. "
                     f"Please ensure the model has been trained (is_training=1 or is_training=2) before testing."
                 )
-            print(f'Loading iReflow model from {self.best_checkpoint_filepath}')
+            print(f'Loading iReflow model from {self.best_checkpoint_filepath} (train_mode_{resolved_mode})')
             self._load_best_model()
             
             # 直接测试
@@ -865,6 +931,8 @@ class iReflowExp(ProbForecastExp):
                 return {}
             
             self._setup_run(seed)
+            self._base_run_save_dir = self.run_save_dir
+            self._set_mode_specific_run_paths(1)
             
             # 检查并恢复运行检查点（需要在模型初始化之后）
             if self._check_run_exist(seed):
@@ -953,16 +1021,19 @@ class iReflowExp(ProbForecastExp):
         
         # 模式 2: 训练整个模型 (is_training=2 或默认)
         if self.is_training == 2:
-            print('>>>>>>>training entire model (iTransformer + Velocity Network) : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
+            print('>>>>>>>training entire model (iTransformer + Uncertainty Estimator + Velocity Network) : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
         else:
             # 兼容旧代码：如果 is_training 不是 0, 1, 2，默认当作 2 处理
             print('>>>>>>>training entire model (default mode) : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
             self.is_training = 2
+            self.model_configs.is_training = 2
         
         if self._use_wandb() and not self._init_wandb(self.project, seed): 
             return {}
         
         self._setup_run(seed)
+        self._base_run_save_dir = self.run_save_dir
+        self._set_mode_specific_run_paths(2)
         
         # 检查并恢复运行检查点（需要在模型初始化之后）
         if self._check_run_exist(seed):
@@ -1239,4 +1310,3 @@ if __name__ == '__main__':
     import fire
     # torch.multiprocessing.set_start_method('spawn')# good solution !!!!
     fire.Fire(iReflowExp)
-

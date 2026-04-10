@@ -74,6 +74,7 @@ class iReflow(nn.Module):
             )
 
         # Loss 权重（默认不改变现有行为）
+        self.point_loss_weight = getattr(configs, 'point_loss_weight', 1.0)
         self.nll_loss_weight = getattr(configs, 'nll_loss_weight', 1.0)
         self.velocity_loss_weight = getattr(configs, 'velocity_loss_weight', 1.0)
         self.gaussian_nll_loss = nn.GaussianNLLLoss()
@@ -192,6 +193,7 @@ class iReflow(nn.Module):
         # Stage 1: 获取条件信息，计算负对数似然损失
         enc_features, y_hat, sigma = self.get_encoder_features(x_enc, x_mark_enc)
 
+        point_loss = F.mse_loss(y_hat, y_gt)
         nll_loss = None
         if self.is_training == 2:
             nll_loss = self.gaussian_nll_loss(y_hat, y_gt, sigma.pow(2))
@@ -202,10 +204,14 @@ class iReflow(nn.Module):
         epsilon = torch.randn_like(y_gt)
         
         # Source State: X_0 ~ N(y_hat, sigma^2)
-        # 我们不希望 Velocity Net 的 Loss 去反向修改 y_hat 和 sigma。
-        # 如果不 detach，Velocity Net 可能会为了好走直线，去扭曲 y_hat 的位置，导致点预测变差。
-        y_hat_flow = y_hat.detach()
-        sigma_flow = sigma.detach()
+        # Stage 3 只训练 velocity_net，因此保持 detach；
+        # 端到端模式则移除 detach，使点预测、sigma 和速度场联合优化。
+        if self.is_training == 2:
+            y_hat_flow = y_hat
+            sigma_flow = sigma
+        else:
+            y_hat_flow = y_hat.detach()
+            sigma_flow = sigma.detach()
         X_0 = self._build_x0(y_hat_flow, sigma_flow, epsilon, temperature=1.0)
         
         # Target State: X_1 = y_gt
@@ -229,16 +235,19 @@ class iReflow(nn.Module):
         velocity_loss = F.mse_loss(v_pred, v_target)
         
         total_loss = self.velocity_loss_weight * velocity_loss
-        if nll_loss is not None:
+        if self.is_training == 2:
+            total_loss = total_loss + self.point_loss_weight * point_loss
             total_loss = total_loss + self.nll_loss_weight * nll_loss
 
         loss_dict = {
             'total_loss': total_loss.item(),
+            'point_loss': point_loss.item(),
             'velocity_loss': velocity_loss.item(),
             'mean_sigma': sigma.mean().item(),
             'min_sigma': sigma.min().item(),
             'max_sigma': sigma.max().item(),
-            'mae_point': F.l1_loss(y_hat, y_gt).item()
+            'mae_point': F.l1_loss(y_hat, y_gt).item(),
+            'mse_point': point_loss.item(),
         }
         if nll_loss is not None:
             loss_dict['nll_loss'] = nll_loss.item()
@@ -287,6 +296,9 @@ class iReflow(nn.Module):
             if self.num_sampling_steps == 1:
                 # One-step generation (极快速)
                 tau = torch.zeros(B, device=device)
+                z_tau = (X_tau - y_hat) / sigma
+                cur_z_traj.append(z_tau)
+                cur_x_traj.append(X_tau)
                 v = self.velocity_net(X_tau, tau, enc_features, y_hat, sigma)
                 X_pred = X_tau + v
             else:
@@ -361,4 +373,3 @@ class iReflow(nn.Module):
             sigma: [B, P, D] 不确定性
         """
         return self.sample(x_enc, x_mark_enc, num_samples, temperature)
-

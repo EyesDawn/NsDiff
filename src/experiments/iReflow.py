@@ -1010,14 +1010,14 @@ class iReflowExp(ProbForecastExp):
                     wandb.log({'learning_rate': current_lr}, step=self.current_epoch)
 
             self._load_best_model()
-            best_test_result = self._test()
+            test_result = self._test()
             if self._use_wandb():
-                for k, v in best_test_result.items(): 
-                    wandb.run.summary[f"best_test_{k}"] = v 
+                for k, v in test_result.items(): 
+                    wandb.run.summary[f"test_{k}"] = v 
             
             if self._use_wandb():  
                 wandb.finish()
-            return best_test_result
+            return test_result
         
         # 模式 2: 训练整个模型 (is_training=2 或默认)
         if self.is_training == 2:
@@ -1096,14 +1096,14 @@ class iReflowExp(ProbForecastExp):
                 wandb.log({'learning_rate': current_lr}, step=self.current_epoch)
 
         self._load_best_model()
-        best_test_result = self._test()
+        test_result = self._test()
         if self._use_wandb():
-            for k, v in best_test_result.items(): 
-                wandb.run.summary[f"best_test_{k}"] = v 
+            for k, v in test_result.items(): 
+                wandb.run.summary[f"test_{k}"] = v 
         
         if self._use_wandb():  
             wandb.finish()
-        return best_test_result
+        return test_result
     
     def train(self):
         """完整训练流程"""

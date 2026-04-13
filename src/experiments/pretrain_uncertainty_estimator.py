@@ -42,6 +42,28 @@ class UncertaintyEstimatorPretrainExp(iReflowExp):
     def __post_init__(self):
         super().__post_init__()
         self.gaussian_nll_loss = torch.nn.GaussianNLLLoss()
+
+    def _get_scaler_std_tensor(self, dtype: torch.dtype, device: torch.device) -> torch.Tensor | None:
+        """
+        Return dataset-level scaler std as a tensor for inverse-transforming sigma.
+
+        Supports both the local `torch_timeseries` StandardScaler (`std`) and
+        sklearn-like naming (`std_` / `scale_`) for robustness.
+        """
+        if not hasattr(self, "scaler"):
+            return None
+
+        std = None
+        if hasattr(self.scaler, "std"):
+            std = getattr(self.scaler, "std")
+        elif hasattr(self.scaler, "std_"):
+            std = getattr(self.scaler, "std_")
+        elif hasattr(self.scaler, "scale_"):
+            std = getattr(self.scaler, "scale_")
+
+        if std is None:
+            return None
+        return torch.as_tensor(std, device=device, dtype=dtype).view(1, 1, -1)
     
     def _init_optimizer(self):
         """
@@ -591,16 +613,9 @@ class UncertaintyEstimatorPretrainExp(iReflowExp):
                     B, P, D = y_hat.shape
                     y_hat_flat = y_hat.reshape(B * P, D)
                     y_hat_orig = self.scaler.inverse_transform(y_hat_flat).reshape(B, P, D)
-                    # 对 sigma，仅按尺度因子放大，不做平移
-                    # 这里简化处理：用 (x_raw_std / x_scaled_std) 的近似常数因子，
-                    # 对于 StandardScaler 这等价于乘以 dataset 级别的 std。
-                    if hasattr(self.scaler, "std_"):
-                        std = torch.as_tensor(
-                            self.scaler.std_, device=device, dtype=sigma.dtype
-                        ).view(1, 1, -1)
-                        sigma_orig = sigma * std
-                    else:
-                        sigma_orig = sigma
+                    # 对 sigma，仅按尺度因子放大，不做平移。
+                    std = self._get_scaler_std_tensor(dtype=sigma.dtype, device=device)
+                    sigma_orig = sigma * std if std is not None else sigma
                     y_hat = y_hat_orig
                     sigma = sigma_orig
 
@@ -668,10 +683,37 @@ class UncertaintyEstimatorPretrainExp(iReflowExp):
         else:
             return None
 
+    @torch.no_grad()
+    def export_decoupling_case_study_data_on_test(
+        self,
+        seed: int = 1,
+        save_path: str = "./results/analysis/Traffic/Traffic_decoupling_case_study_data.npz",
+        eps: float = 1e-6,
+        return_result: bool = False,
+    ) -> Dict[str, np.ndarray] | None:
+        """
+        Dedicated exporter for Experiment 1.
+
+        Always writes raw-scale future targets and raw-scale PDN macro statistics:
+          - Y: raw future target
+          - mu_X / sigma_X: raw historical RevIN statistics
+          - mu_Y_hat / sigma_Y_hat: raw-scale predictive macro components
+          - Z_PDN: PDN residuals computed in raw scale
+
+        This avoids ambiguity around whether the saved tensors are in normalized
+        or original scale and is intended for `src/analysis/decoupling_case_study.py`.
+        """
+        return self.extract_residuals_on_test(
+            seed=seed,
+            save_path=save_path,
+            use_origin_scale=True,
+            eps=eps,
+            return_result=return_result,
+        )
+
 
 if __name__ == '__main__':
     setproctitle.setproctitle('UncertaintyEstimator_Pretrain')
     
     import fire
     fire.Fire(UncertaintyEstimatorPretrainExp)
-

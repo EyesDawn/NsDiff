@@ -146,7 +146,7 @@ class iReflow(nn.Module):
             min_sigma = torch.full_like(sigma, 1e-3)
             sigma = torch.clamp(sigma, min=min_sigma, max=2.0 * scale)
         else:
-            sigma = torch.clamp(sigma, min=1e-3)
+            sigma = torch.clamp(sigma, min=0.1)
         var = sigma.pow(2)
         s = torch.log(var)
 

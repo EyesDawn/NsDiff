@@ -23,6 +23,8 @@ saves
 
 wandb
 .codex
+tmp_analysis_test
+docs/paper
 
 # dataset suffix
 *.txt.gz

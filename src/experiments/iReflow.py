@@ -3,7 +3,7 @@ iReflow实验脚本
 用于训练和评估iReflow模型
 """
 from dataclasses import dataclass, field
-from typing import List, Dict
+from typing import List, Dict, Optional
 import os
 import torch
 from dataclasses import dataclass, asdict, field
@@ -39,7 +39,10 @@ def dict2namespace(config):
 
 class iReflowEarlyStopping(EarlyStopping):
     def save_checkpoint(self, val_loss, model):
-        """保存模型检查点"""
+        """保存模型检查点
+        
+        注意：虽然参数名为 val_loss，但实际传入的是 CRPS 指标值
+        """
         if self.verbose:
             self.trace_func(
                 f"Validation CRPS decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}). Saving model ..."
@@ -91,13 +94,20 @@ class iReflowExp(ProbForecastExp):
     lr: float = 0.0001
     epochs: int = 100
     batch_size: int = 32
+    num_worker: int = 1
     patience: int = 10
     lr_patience: int = 1  # 学习率调度器的patience
+    point_loss_weight: float = 1.0
+    nll_loss_weight: float = 1.0
+    velocity_loss_weight: float = 1.0
+    checkpoint_mode_for_test: Optional[int] = None
     
     # Flow配置
     num_sampling_steps: int = 1  # ODE求解步数，1表示one-step generation
     temperature: float = 1.0  # 采样温度
     num_samples: int = 100  # 测试时生成的样本数
+    val_num_samples: int = 100  # 验证时用于估计 CRPS 的样本数
+    x0_dist: str = 'pred_gaussian'  # X_0 分布: pred_gaussian | standard_normal
     
     # 损失函数
     loss_func_type: str = 'mse'
@@ -160,9 +170,12 @@ class iReflowExp(ProbForecastExp):
         self.model_configs.class_strategy = self.class_strategy
         self.model_configs.factor = self.factor
         self.model_configs.num_sampling_steps = self.num_sampling_steps
+        self.model_configs.x0_dist = self.x0_dist
         # Loss 配置与梯度通路控制
-        self.model_configs.nll_loss_weight = getattr(self, "nll_loss_weight", 1.0)
-        self.model_configs.velocity_loss_weight = getattr(self, "velocity_loss_weight", 1.0)
+        self.model_configs.is_training = self.is_training
+        self.model_configs.point_loss_weight = self.point_loss_weight
+        self.model_configs.nll_loss_weight = self.nll_loss_weight
+        self.model_configs.velocity_loss_weight = self.velocity_loss_weight
         self.model_configs.use_relative_space = self.use_relative_space
     
     def _init_model(self):
@@ -262,14 +275,14 @@ class iReflowExp(ProbForecastExp):
             # 收集所有批次的详细指标
             train_metrics = {
                 'total_loss': [],
+                'point_loss': [],
                 'velocity_loss': [],
                 'nll_loss': [],
                 'mean_sigma': [],
                 'min_sigma': [],
                 'max_sigma': [],
                 'mae_point': [],
-                'gate_mean': [],
-                'gate_var': [],
+                'mse_point': [],
             }
             
             for i, (
@@ -342,7 +355,7 @@ class iReflowExp(ProbForecastExp):
         num_samples = getattr(self, '_num_samples_for_eval', self.num_samples)
         
         # 生成样本
-        samples, y_hat, sigma = self.model.forecast(
+        samples, y_hat, sigma, _, _ = self.model.forecast(
             x_enc=batch_x,
             x_mark_enc=batch_x_date_enc,
             num_samples=num_samples,
@@ -359,7 +372,7 @@ class iReflowExp(ProbForecastExp):
         
         return preds, truths
 
-    def _evaluate(self, dataloader):
+    def _evaluate(self, dataloader, plot=False):
         """
         重写评估逻辑：
         - 保持父类的采样型概率指标（CRPS/QICE/PICP/...）
@@ -394,14 +407,14 @@ class iReflowExp(ProbForecastExp):
 
         with tqdm(total=len(dataloader.dataset)) as progress_bar:
             with torch.no_grad():
-                for batch_x, batch_y, origin_x, origin_y, batch_x_date_enc, batch_y_date_enc in dataloader:
+                for i, (batch_x, batch_y, origin_x, origin_y, batch_x_date_enc, batch_y_date_enc) in enumerate(dataloader):
                     batch_x = batch_x.to(self.device).float()
                     batch_y = batch_y.to(self.device).float()
                     origin_y = origin_y.to(self.device).float()
                     batch_x_date_enc = batch_x_date_enc.to(self.device).float()
 
                     # 生成采样预测 + 点预测与 sigma
-                    samples, y_hat, sigma = self.model.forecast(
+                    samples, y_hat, sigma, z_samples, x_samples = self.model.forecast(
                         x_enc=batch_x,
                         x_mark_enc=batch_x_date_enc,
                         num_samples=num_samples,
@@ -436,6 +449,29 @@ class iReflowExp(ProbForecastExp):
                         sigma_sums[k] = sigma_sums.get(k, 0.0) + float(v)
                     sigma_counts += 1
 
+                    if plot:
+                        voutput = preds.permute(0,3,1,2).detach().cpu().numpy()
+                        true = truths.detach().cpu().numpy()
+                        vx = batch_x.detach().cpu().numpy()[0, :, -1]
+
+                        vtrue = np.concatenate((vx, true[0, :, -1]))
+                        data = voutput[0,:,:,-1]
+                        prob_visual(data, vtrue, name=os.path.join(os.path.join('./plot_results', self.dataset_type), str(i) + '.pdf'))
+
+                        # sigma = sigma.detach().cpu().numpy()
+                        # vsigma = sigma[0,:,-1]
+                        # std_visual(vx, true[0, :, -1], vsigma, name=os.path.join(os.path.join('./plot_results', self.dataset_type), str(i) + '_std' + '.pdf'))
+
+                        # z = z_samples[0,:,:,-1].detach().cpu().numpy()
+                        # x = x_samples[0,:,:,-1].detach().cpu().numpy()
+                        # zx_visual(z,x, name=os.path.join(os.path.join('./plot_results', self.dataset_type), str(i) + '_std' + '.pdf'))
+
+                        max_plot_steps = min(5, z_samples.shape[0])
+                        for j in range(max_plot_steps):
+                            z = z_samples[j,0,:,:,-1].detach().cpu().numpy()
+                            x = x_samples[j,0,:,:,-1].detach().cpu().numpy()
+                            zx_visual(z,x, name=os.path.join(os.path.join('./plot_results', self.dataset_type), str(i) + '_std' + str(j) + '.pdf'))
+
                     progress_bar.update(batch_x.shape[0])
 
         result = {name: float(metric.compute()) for name, metric in self.metrics.items()}
@@ -444,9 +480,9 @@ class iReflowExp(ProbForecastExp):
         return result
     
     def _val(self):
-        """验证：使用较少的样本数以加快验证速度"""
+        """验证：使用固定的采样数来稳定 CRPS 估计。"""
         # 设置验证时使用的样本数
-        self._num_samples_for_eval = min(self.num_samples, 30)
+        self._num_samples_for_eval = min(self.num_samples, self.val_num_samples)
         
         # 计算验证损失（用于学习率调度）
         self.model.eval()
@@ -479,11 +515,19 @@ class iReflowExp(ProbForecastExp):
         delattr(self, '_num_samples_for_eval')
         return result
     
+    # 不参与 run_save_dir hash 计算的字段：这些字段只影响运行行为，不影响模型结构/数据
+    _run_irrelevant_fields = {
+        'is_training',   # 训练/测试模式切换，is_training=0 需要能找到 is_training=1 训练出的模型
+        'wandb_project', # 日志项目名，不影响实验结果
+        'checkpoint_mode_for_test', # 仅影响测试时从哪个训练模式目录加载
+    }
+
     @property
     def result_related_configs(self):
         """
         重写 result_related_configs 属性，确保所有值都可以被 JSON 序列化
         排除不可序列化的对象（如 argparse.Namespace, 模型对象等）
+        同时排除 _run_irrelevant_fields 中的字段，使 run_save_dir hash 在不同运行模式下保持一致
         """
         from torch_timeseries.utils import asdict_exc
         from torch_timeseries.core.experiments.settings import BaseIrrelevant
@@ -494,18 +538,18 @@ class iReflowExp(ProbForecastExp):
         # 过滤掉不可序列化的对象
         serializable_ident = {}
         for k, v in ident.items():
+            if k in self._run_irrelevant_fields:
+                continue
             try:
                 # 尝试序列化以检查是否可序列化
                 json.dumps(v)
                 serializable_ident[k] = v
             except (TypeError, ValueError):
                 # 如果不可序列化，转换为字符串表示
-                # 对于 argparse.Namespace 等对象，转换为字符串
+                # 对于 argparse.Namespace 等对象，转换为字典
                 if isinstance(v, (argparse.Namespace,)):
-                    # 对于 Namespace 对象，转换为字典
                     serializable_ident[k] = vars(v) if hasattr(v, '__dict__') else str(v)
                 elif hasattr(v, '__class__'):
-                    # 对于其他对象，使用类型名称
                     serializable_ident[k] = type(v).__name__
                 else:
                     serializable_ident[k] = str(v)
@@ -532,6 +576,7 @@ class iReflowExp(ProbForecastExp):
         exists = os.path.exists(self.run_checkpoint_filepath)
         return exists
     
+    # TODO: 修改 setting 格式，使其符合 iTransformer 的 setting 格式
     def _get_setting(self, seed=0):
         """
         生成实验设置字符串，用于 checkpoints 路径命名
@@ -725,90 +770,69 @@ class iReflowExp(ProbForecastExp):
                 print(f'Warning: Unexpected keys: {unexpected_keys[:5]}...' if len(unexpected_keys) > 5 else f'Warning: Unexpected keys: {unexpected_keys}')
             
             print('iTransformer weights extracted successfully.')
-    
-    def _load_checkpoint_model(self, setting):
-        """
-        从 checkpoints 加载模型
-        路径规则：os.path.join(self.checkpoints, setting) + '/checkpoint.pth'
-        
-        支持两种 checkpoint 格式：
-        1. iReflow checkpoint: 直接加载整个模型
-        2. iTransformer checkpoint: 只加载 itransformer 部分的权重
-        """
-        path = os.path.join(self.checkpoints, setting)
-        best_model_path = os.path.join(path, 'checkpoint.pth')
-        
-        if not os.path.exists(best_model_path):
+
+    def _set_mode_specific_run_paths(self, mode: int):
+        """将训练/测试产物重定向到 train_mode_{mode} 子目录。"""
+        if mode not in (1, 2):
+            raise ValueError(f"Unsupported mode for checkpoint paths: {mode}. Expected 1 or 2.")
+
+        base_run_dir = getattr(self, "_base_run_save_dir", self.run_save_dir)
+        self._base_run_save_dir = base_run_dir
+        self.run_save_dir = os.path.join(base_run_dir, f"train_mode_{mode}")
+        self.run_checkpoint_filepath = os.path.join(self.run_save_dir, "run_checkpoint.pth")
+        self.best_checkpoint_filepath = os.path.join(self.run_save_dir, "best_model.pth")
+
+        if hasattr(self, "early_stopping") and hasattr(self.early_stopping, "path"):
+            self.early_stopping.path = self.best_checkpoint_filepath
+
+    def _resolve_test_checkpoint_mode(self) -> int:
+        """解析 is_training=0 时应该加载哪个训练模式的最佳模型。"""
+        requested_mode = self.checkpoint_mode_for_test
+        base_run_dir = getattr(self, "_base_run_save_dir", self.run_save_dir)
+
+        if requested_mode is not None:
+            if requested_mode not in (1, 2):
+                raise ValueError(
+                    f"Invalid checkpoint_mode_for_test={requested_mode}. Expected 1 or 2."
+                )
+            requested_best_model = os.path.join(
+                base_run_dir, f"train_mode_{requested_mode}", "best_model.pth"
+            )
+            if not os.path.exists(requested_best_model):
+                raise FileNotFoundError(
+                    f"Requested test checkpoint mode {requested_mode} not found at {requested_best_model}."
+                )
+            return requested_mode
+
+        available_modes = []
+        for mode in (1, 2):
+            best_model_path = os.path.join(
+                base_run_dir, f"train_mode_{mode}", "best_model.pth"
+            )
+            if os.path.exists(best_model_path):
+                available_modes.append(mode)
+
+        if len(available_modes) == 1:
+            return available_modes[0]
+        if len(available_modes) == 0:
             raise FileNotFoundError(
-                f"Checkpoint not found at {best_model_path}. "
-                f"Please ensure the model has been trained and saved."
+                "No trained iReflow checkpoint found for testing. "
+                f"Searched under {os.path.join(base_run_dir, 'train_mode_1')} and "
+                f"{os.path.join(base_run_dir, 'train_mode_2')}."
             )
-        
-        print(f'Loading model from {best_model_path}')
-        # 使用 weights_only=True 因为 checkpoint 只包含模型权重（state_dict）
-        checkpoint = torch.load(best_model_path, map_location=self.device, weights_only=True)
-        
-        # 处理嵌套字典的情况（checkpoint 可能包含 'model' 键）
-        if isinstance(checkpoint, dict) and 'model' in checkpoint:
-            print('Found nested checkpoint structure, extracting model state_dict...')
-            checkpoint = checkpoint['model']
-        
-        # 检查是否是 iTransformer checkpoint（键名包含 enc_embedding, encoder, projector）
-        # 还是 iReflow checkpoint（包含 itransformer, velocity_net 等）
-        is_itransformer_checkpoint = any(
-            key.startswith('enc_embedding') or 
-            key.startswith('encoder') or 
-            key.startswith('projector')
-            for key in checkpoint.keys()
+
+        raise ValueError(
+            "Multiple trained iReflow checkpoints found for testing. "
+            "Please set checkpoint_mode_for_test=1 or checkpoint_mode_for_test=2 explicitly."
         )
-        
-        if is_itransformer_checkpoint:
-            # 这是 iTransformer checkpoint，需要提取 itransformer 部分的权重
-            print('Detected iTransformer checkpoint, loading itransformer weights...')
-            
-            # 构建 itransformer 的 state_dict（直接使用原始键名，因为 load_state_dict 是直接加载到子模块）
-            itransformer_state_dict = {}
-            for key, value in checkpoint.items():
-                # 跳过 projector（iReflow 不使用）
-                if key.startswith('projector'):
-                    continue
-                # 跳过非模型参数
-                if key in ['optimizer', 'scheduler', 'epoch', 'current_epoch', 'rng_state', 'early_stopping']:
-                    continue
-                # 直接使用原始键名（不需要添加 'itransformer.' 前缀，因为是直接加载到子模块）
-                itransformer_state_dict[key] = value
-            
-            if not itransformer_state_dict:
-                raise ValueError("Could not extract itransformer weights from iTransformer checkpoint. Checkpoint may be empty or in unexpected format.")
-            
-            # 只加载 itransformer 部分的权重
-            missing_keys, unexpected_keys = self.model.itransformer.load_state_dict(
-                itransformer_state_dict, strict=False
-            )
-            
-            if missing_keys:
-                print(f'Warning: Missing keys in itransformer: {missing_keys[:5]}...' if len(missing_keys) > 5 else f'Warning: Missing keys: {missing_keys}')
-            if unexpected_keys:
-                print(f'Warning: Unexpected keys: {unexpected_keys[:5]}...' if len(unexpected_keys) > 5 else f'Warning: Unexpected keys: {unexpected_keys}')
-            
-            print('iTransformer weights loaded successfully. Velocity network and uncertainty estimator remain untrained.')
-        else:
-            # 这是 iReflow checkpoint，直接加载整个模型
-            missing_keys, unexpected_keys = self.model.load_state_dict(checkpoint, strict=False)
-            
-            if missing_keys:
-                print(f'Warning: Missing keys: {missing_keys[:5]}...' if len(missing_keys) > 5 else f'Warning: Missing keys: {missing_keys}')
-            if unexpected_keys:
-                print(f'Warning: Unexpected keys: {unexpected_keys[:5]}...' if len(unexpected_keys) > 5 else f'Warning: Unexpected keys: {unexpected_keys}')
-            
-            print('iReflow model loaded successfully')
+    
     
     def _resume_run(self, seed):
         """恢复运行检查点（重写父类方法以支持调度器状态恢复）"""
-        run_checkpoint_filepath = os.path.join(self.run_save_dir, f"run_checkpoint.pth")
-        print(f"resuming from {run_checkpoint_filepath}")
+        print(f"resuming from {self.run_checkpoint_filepath}")
 
-        check_point = torch.load(run_checkpoint_filepath, map_location=self.device)
+        # torch.serialization.add_safe_globals([np.core.multiarray.scalar])
+        check_point = torch.load(self.run_checkpoint_filepath, map_location=self.device, weights_only=False)
 
         self.model.load_state_dict(check_point["model"])
         self.model_optim.load_state_dict(check_point["optimizer"])
@@ -865,7 +889,6 @@ class iReflowExp(ProbForecastExp):
         self.current_seed = seed
         # 生成 setting 字符串（用于 checkpoints 路径）
         setting = self._get_setting(seed)
-        
         # 模式 0: 只测试，不训练
         if self.is_training == 0:
             print('>>>>>>>testing (no training) : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
@@ -876,9 +899,18 @@ class iReflowExp(ProbForecastExp):
             
             # 需要先 setup_run 以初始化必要的路径和配置
             self._setup_run(seed)
+            self._base_run_save_dir = self.run_save_dir
+            resolved_mode = self._resolve_test_checkpoint_mode()
+            self._set_mode_specific_run_paths(resolved_mode)
             
-            # 从 checkpoints 加载模型
-            self._load_checkpoint_model(setting)
+            # 加载已训练好的 iReflow 模型（best_model.pth 由训练阶段保存）
+            if not os.path.exists(self.best_checkpoint_filepath):
+                raise FileNotFoundError(
+                    f"iReflow best model not found at {self.best_checkpoint_filepath}. "
+                    f"Please ensure the model has been trained (is_training=1 or is_training=2) before testing."
+                )
+            print(f'Loading iReflow model from {self.best_checkpoint_filepath} (train_mode_{resolved_mode})')
+            self._load_best_model()
             
             # 直接测试
             test_result = self._test()
@@ -899,6 +931,8 @@ class iReflowExp(ProbForecastExp):
                 return {}
             
             self._setup_run(seed)
+            self._base_run_save_dir = self.run_save_dir
+            self._set_mode_specific_run_paths(1)
             
             # 检查并恢复运行检查点（需要在模型初始化之后）
             if self._check_run_exist(seed):
@@ -919,7 +953,7 @@ class iReflowExp(ProbForecastExp):
                 self._freeze_itransformer()
                 self._freeze_uncertainty_estimator()
 
-            self._run_print(f"run : nss{self.num_sampling_steps}_temp{self.temperature} in seed: {seed}")
+            self._run_print(f"run : nss{self.num_sampling_steps}_temp{self.temperature}_invtrans{self.invtrans_loss} in seed: {seed}")
 
             parameter_tables, model_parameters_num = count_parameters(self.model)
             # self._run_print(f"parameter_tables: {parameter_tables}")
@@ -948,7 +982,6 @@ class iReflowExp(ProbForecastExp):
                 self._run_print(f"Training loss : {train_loss}")
 
                 val_result = self._val()
-                # test_result = self._test()
 
                 self.current_epoch = self.current_epoch + 1
                 
@@ -957,7 +990,7 @@ class iReflowExp(ProbForecastExp):
                 
                 # 学习率调度
                 old_lr = self.model_optim.param_groups[0]['lr']
-                self.scheduler.step(val_result['loss'])
+                self.scheduler.step(val_result['crps'])
                 current_lr = self.model_optim.param_groups[0]['lr']
                 
                 # 记录学习率变化
@@ -974,37 +1007,39 @@ class iReflowExp(ProbForecastExp):
                     for key, value in train_metrics.items():
                         wandb.log({f"train_{key}": value}, step=self.current_epoch)
                     wandb.log({f"val_{k}": v for k, v in val_result.items()}, step=self.current_epoch)
-                    # wandb.log({f"test_{k}": v for k, v in test_result.items()}, step=self.current_epoch)
                     wandb.log({'learning_rate': current_lr}, step=self.current_epoch)
 
             self._load_best_model()
-            best_test_result = self._test()
+            test_result = self._test()
             if self._use_wandb():
-                for k, v in best_test_result.items(): 
-                    wandb.run.summary[f"best_test_{k}"] = v 
+                for k, v in test_result.items(): 
+                    wandb.run.summary[f"test_{k}"] = v 
             
             if self._use_wandb():  
                 wandb.finish()
-            return best_test_result
+            return test_result
         
         # 模式 2: 训练整个模型 (is_training=2 或默认)
         if self.is_training == 2:
-            print('>>>>>>>training entire model (iTransformer + Velocity Network) : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
+            print('>>>>>>>training entire model (iTransformer + Uncertainty Estimator + Velocity Network) : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
         else:
             # 兼容旧代码：如果 is_training 不是 0, 1, 2，默认当作 2 处理
             print('>>>>>>>training entire model (default mode) : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
             self.is_training = 2
+            self.model_configs.is_training = 2
         
         if self._use_wandb() and not self._init_wandb(self.project, seed): 
             return {}
         
         self._setup_run(seed)
+        self._base_run_save_dir = self.run_save_dir
+        self._set_mode_specific_run_paths(2)
         
         # 检查并恢复运行检查点（需要在模型初始化之后）
         if self._check_run_exist(seed):
             self._resume_run(seed)
 
-        self._run_print(f"run : nss{self.num_sampling_steps}_temp{self.temperature} in seed: {seed}")
+        self._run_print(f"run : nss{self.num_sampling_steps}_temp{self.temperature}_invtrans{self.invtrans_loss} in seed: {seed}")
 
         parameter_tables, model_parameters_num = count_parameters(self.model)
         self._run_print(f"parameter_tables: {parameter_tables}")
@@ -1033,7 +1068,6 @@ class iReflowExp(ProbForecastExp):
             self._run_print(f"Training loss : {train_loss}")
 
             val_result = self._val()
-            test_result = self._test()
 
             self.current_epoch = self.current_epoch + 1
             
@@ -1042,7 +1076,7 @@ class iReflowExp(ProbForecastExp):
             
             # 学习率调度
             old_lr = self.model_optim.param_groups[0]['lr']
-            self.scheduler.step(val_result['loss'])
+            self.scheduler.step(val_result['crps'])
             current_lr = self.model_optim.param_groups[0]['lr']
             
             # 记录学习率变化
@@ -1059,18 +1093,17 @@ class iReflowExp(ProbForecastExp):
                 for key, value in train_metrics.items():
                     wandb.log({f"train_{key}": value}, step=self.current_epoch)
                 wandb.log({f"val_{k}": v for k, v in val_result.items()}, step=self.current_epoch)
-                wandb.log({f"test_{k}": v for k, v in test_result.items()}, step=self.current_epoch)
                 wandb.log({'learning_rate': current_lr}, step=self.current_epoch)
 
         self._load_best_model()
-        best_test_result = self._test()
+        test_result = self._test()
         if self._use_wandb():
-            for k, v in best_test_result.items(): 
-                wandb.run.summary[f"best_test_{k}"] = v 
+            for k, v in test_result.items(): 
+                wandb.run.summary[f"test_{k}"] = v 
         
         if self._use_wandb():  
             wandb.finish()
-        return best_test_result
+        return test_result
     
     def train(self):
         """完整训练流程"""
@@ -1113,7 +1146,7 @@ class iReflowExp(ProbForecastExp):
             
             # 学习率调度（使用验证损失）
             old_lr = self.model_optim.param_groups[0]['lr']
-            self.scheduler.step(val_result['loss'])
+            self.scheduler.step(val_result['crps'])
             current_lr = self.model_optim.param_groups[0]['lr']
             
             # 记录学习率变化
@@ -1144,10 +1177,136 @@ class iReflowExp(ProbForecastExp):
         return test_results
 
 
+import matplotlib.pyplot as plt
+
+def prob_visual(data, true, pred=None, random_int=None, name='./pic/test.pdf'):
+    plt.figure(figsize=(12,7))
+    plt.grid(True) 
+    pred = np.mean(data, axis=0)
+    plt.plot(np.arange(192)+96, pred, label='Mean Prediction', linewidth=1.5, color='darkblue')
+    # plt.plot(data_mean, label='DiffMean', linewidth=1.5, color='green')
+    plt.plot(true, label='GroundTruth', linewidth=2., color='#9D2121')    
+    # plt.fill_between(np.arange(len(up))+96, down, up, color="green", alpha=0.2, label="Uncertainty Range")
+    percentiles = np.percentile(data, q=[2.5, 25, 75, 97.5], axis=0)
+    plt.fill_between(np.arange(192)+96, percentiles[0], percentiles[3], color="#1f77b4", alpha=0.2, label="95% range")
+    plt.fill_between(np.arange(192)+96, percentiles[1], percentiles[2], color="#0F4A74", alpha=0.2, label="50% Range")
+    # for i in range(len(random_int)):
+    #     plt.axvline(x = random_int[i] + 96, color="grey", linestyle="--", linewidth=1)
+    # plt.ylim(-2.2, 0.5) # ETTh1
+    # plt.ylim(-1.8, 0.) # ETTm1
+    # plt.ylim(-4, 7.0) #traffic
+    # plt.ylim(-8.0, 7.5)
+    
+    plt.legend()
+    plt.savefig(name, bbox_inches='tight')
+    plt.close()
+
+def std_visual(batch_x, batch_y, pred_std, name='./pic/test.pdf'):
+    plt.figure(figsize=(12,7))
+    # plt.grid(True) 
+    x_std = np.std(batch_x)                  # 标量
+    x_std = np.full(192, x_std, dtype=float)
+    _,_,y_std = DDN(batch_y, 25)
+    plt.subplot(2,1,1)
+    plt.plot(batch_y, label='GroundTruth', linewidth=2., color='#9D2121')    
+    plt.subplot(2,1,2)
+    # print(pred_std.shape)
+    # print(x_std.shape)
+    # print(y_std.shape)
+    # assert 0
+    plt.plot(pred_std, linewidth=1.5, color='darkblue', label='pred')
+    plt.plot(x_std, linewidth=1.5, color='darkgreen', label='revin')
+    plt.plot(y_std, linewidth=1.5, color='yellow', label='sliding')
+
+    plt.legend()
+    plt.savefig(name, bbox_inches='tight')
+    plt.close()
+
+
+def zx_visual(z, x, name='./pic/test.pdf'):
+    """
+    z: shape [N, T] 或 [N, D]
+    x: shape [N, T] 或 [N, D]
+    沿 axis=0 计算 mean/std，并画出 mean 及 mean±std
+    """
+    z_std = np.std(z, axis=0)
+    z_mean = np.mean(z, axis=0)
+
+    x_std = np.std(x, axis=0)
+    x_mean = np.mean(x, axis=0)
+
+    t_z = np.arange(len(z_mean))
+    t_x = np.arange(len(x_mean))
+
+    plt.figure(figsize=(10, 7))
+
+    # ===== z =====
+    plt.subplot(2, 1, 1)
+    plt.plot(t_x, x_mean, label='x mean', linewidth=2)
+    plt.plot(t_x, x_mean + x_std, label='x mean + std', linestyle='--', linewidth=1.5)
+    plt.plot(t_x, x_mean - x_std, label='x mean - std', linestyle='--', linewidth=1.5)
+    plt.fill_between(t_x, x_mean - x_std, x_mean + x_std, alpha=0.2)
+    plt.title('X statistics')
+    plt.legend()
+    plt.grid(True)
+
+    # ===== x =====
+    plt.subplot(2, 1, 2)    
+    plt.plot(t_z, z_mean, label='z mean', linewidth=2)
+    plt.plot(t_z, z_mean + z_std, label='z mean + std', linestyle='--', linewidth=1.5)
+    plt.plot(t_z, z_mean - z_std, label='z mean - std', linestyle='--', linewidth=1.5)
+    plt.fill_between(t_z, z_mean - z_std, z_mean + z_std, alpha=0.2)
+    plt.title('Z statistics')
+    plt.legend()
+    plt.grid(True)
+
+    plt.tight_layout()
+    plt.savefig(name, bbox_inches='tight')
+    plt.close()
+
+
+
+
+# import numpy as np
+# import matplotlib.pyplot as plt
+
+# def std_visual(batch_x, batch_y, pred_std, name='./pic/test.pdf'):
+#     fig, axes = plt.subplots(2, 1, figsize=(12, 7))
+
+#     # 计算输入序列整体标准差，并扩展到与 batch_y 同长度
+#     x_std = np.std(batch_x)
+#     x_std = np.full_like(batch_y, x_std, dtype=float)
+
+#     y_std = DDN(batch_y, 7)
+
+#     # 上图
+#     axes[0].plot(batch_y, label='GroundTruth', linewidth=2.0, color='#9D2121')
+#     axes[0].grid(True)
+#     axes[0].legend()
+
+#     # 下图
+#     axes[1].plot(pred_std, label='Pred Std', linewidth=1.5, color='darkblue')
+#     axes[1].plot(x_std, label='Input Std', linewidth=1.5, color='darkgreen')
+#     axes[1].plot(y_std, label='Target Std', linewidth=1.5, color='yellow')
+#     axes[1].grid(True)
+#     axes[1].legend()
+
+#     plt.tight_layout()
+#     plt.savefig(name, bbox_inches='tight')
+#     plt.close()
+
+def DDN(data, kernel):
+    x = torch.tensor(data)
+    x_window = x.unfold(-1, kernel, 1)
+    m, s = x_window.mean(dim=-1).numpy(), x_window.std(dim=-1).numpy()
+    m, s = np.pad(m, (kernel//2,kernel//2), mode='edge'), np.pad(s, (kernel//2,kernel//2), mode='edge')
+    data = (data - m) / (s + 1e-5)
+    return data, m, s
+    
+
 if __name__ == '__main__':
     setproctitle.setproctitle('iReflow_main')
 
     import fire
     # torch.multiprocessing.set_start_method('spawn')# good solution !!!!
     fire.Fire(iReflowExp)
-

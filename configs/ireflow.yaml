@@ -24,6 +24,7 @@ model:
   # Flow配置
   num_sampling_steps: 1  # ODE求解步数（1=one-step generation）
   temperature: 1.0       # 采样温度
+  x0_dist: "pred_gaussian"  # X_0 分布: pred_gaussian | standard_normal
 
 # 训练配置
 training:
@@ -46,7 +47,7 @@ data:
   horizon: 1        # 预测步长
   
   # 数据加载
-  num_workers: 4
+  num_worker: 4
   pin_memory: true
 
 # 测试配置

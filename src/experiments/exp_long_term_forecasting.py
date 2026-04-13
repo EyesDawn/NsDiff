@@ -211,7 +211,6 @@ class Exp_Long_Term_Forecast(Exp_Point_Basic):
     def train(self, setting):
         train_data, train_loader = self._get_data(flag='train')
         vali_data, vali_loader = self._get_data(flag='val')
-        test_data, test_loader = self._get_data(flag='test')
 
         path = os.path.join(self.args.checkpoints, setting)
         if not os.path.exists(path):
@@ -221,7 +220,7 @@ class Exp_Long_Term_Forecast(Exp_Point_Basic):
         if self.wandb_project and wandb is not None:
             wandb.init(
                 project=self.wandb_project,
-                name=setting,
+                name=self.args.model_id,
                 config={
                     'model': self.args.model,
                     'data': self.args.data,
@@ -245,6 +244,15 @@ class Exp_Long_Term_Forecast(Exp_Point_Basic):
 
         model_optim = self._select_optimizer()
         criterion = self._select_criterion()
+        scheduler = None
+        if self.args.lradj == 'plateau':
+            scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+                model_optim,
+                mode='min',
+                factor=self.args.lr_factor,
+                patience=self.args.lr_patience,
+                min_lr=self.args.min_lr,
+            )
 
         if self.args.use_amp:
             scaler = torch.amp.GradScaler('cuda')
@@ -315,36 +323,37 @@ class Exp_Long_Term_Forecast(Exp_Point_Basic):
             print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
             train_loss = np.average(train_loss)
             vali_loss = self.vali(vali_data, vali_loader, criterion)
-            test_loss = self.vali(test_data, test_loader, criterion)
 
-            print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f} Test Loss: {4:.7f}".format(
-                epoch + 1, train_steps, train_loss, vali_loss, test_loss))
+            print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f}".format(
+                epoch + 1, train_steps, train_loss, vali_loss))
             
             # 记录到 wandb
             if self.wandb_run is not None:
+                current_lr = model_optim.param_groups[0]['lr']
                 wandb.log({
                     'train_loss': train_loss,
                     'val_loss': vali_loss,
-                    'test_loss': test_loss,
-                    'epoch': epoch + 1
-                })
+                    'learning_rate': current_lr,
+                }, step=epoch + 1)
             
             early_stopping(vali_loss, self.model, path)
             if early_stopping.early_stop:
                 print("Early stopping")
                 break
 
-            adjust_learning_rate(model_optim, epoch + 1, self.args)
+            if scheduler is not None:
+                prev_lr = model_optim.param_groups[0]['lr']
+                scheduler.step(vali_loss)
+                new_lr = model_optim.param_groups[0]['lr']
+                if new_lr != prev_lr:
+                    print('Updating learning rate to {}'.format(new_lr))
+            else:
+                adjust_learning_rate(model_optim, epoch + 1, self.args)
 
             # get_cka(self.args, setting, self.model, train_loader, self.device, epoch)
 
         best_model_path = path + '/' + 'checkpoint.pth'
         self.model.load_state_dict(torch.load(best_model_path))
-
-        # 完成 wandb run
-        if self.wandb_run is not None:
-            wandb.finish()
-            self.wandb_run = None
 
         return self.model
 
@@ -360,7 +369,7 @@ class Exp_Long_Term_Forecast(Exp_Point_Basic):
         if self.wandb_project and wandb is not None and self.wandb_run is None:
             wandb.init(
                 project=self.wandb_project,
-                name=setting + '_test',
+                name=self.args.model_id,
                 config={
                     'model': self.args.model,
                     'data': self.args.data,
@@ -457,13 +466,6 @@ class Exp_Long_Term_Forecast(Exp_Point_Basic):
 
         # 记录测试指标到 wandb
         if self.wandb_run is not None:
-            wandb.log({
-                'test_mae': mae,
-                'test_mse': mse,
-                'test_rmse': rmse,
-                'test_mape': mape,
-                'test_mspe': mspe
-            })
             wandb.run.summary.update({
                 'test_mae': mae,
                 'test_mse': mse,
@@ -476,8 +478,8 @@ class Exp_Long_Term_Forecast(Exp_Point_Basic):
         np.save(folder_path + 'pred.npy', preds)
         np.save(folder_path + 'true.npy', trues)
 
-        # 如果是在测试模式下初始化的 wandb，则在这里完成
-        if self.wandb_run is not None and test:
+        # 完成 wandb run。训练后接 test() 时复用同一个 run，这里统一关闭。
+        if self.wandb_run is not None:
             wandb.finish()
             self.wandb_run = None
 

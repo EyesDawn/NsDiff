@@ -3,8 +3,12 @@ gluonts
 pytorchts
 CRPS
 linear_attention_transformer
+reformer-pytorch
 opt-einsum
 cmake
 pykeops 
 ema-pytorch
 pyyaml
+setproctitle
+properscoring
+wandb

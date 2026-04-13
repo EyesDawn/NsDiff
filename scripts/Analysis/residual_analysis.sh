@@ -6,21 +6,21 @@ export CUDA_DEVICE_ORDER=PCI_BUS_ID
 #     --wandb_project "" \
 #     --is_training 0 \
 #     --root_path ./data/ \
-#     --data_path electricity/electricity.csv \
-#     --model_id electricity_96_192 \
+#     --data_path weather/weather.csv \
+#     --model_id weather_96_192 \
 #     --model iReflow \
-#     --data Electricity \
+#     --data Weather \
 #     --features M \
 #     --seq_len 96 \
 #     --pred_len 192 \
 #     --e_layers 3 \
-#     --enc_in 321 \
-#     --dec_in 321 \
-#     --c_out 321 \
+#     --enc_in 21 \
+#     --dec_in 21 \
+#     --c_out 21 \
 #     --d_model 512 \
 #     --d_ff 512 \
 #     --batch_size 32 \
-#     --lr 0.0005 \
+#     --lr 0.0001 \
 #     --itr 1 \
 #     --checkpoints ./results/runs/iTransformer/ \
 #     --flow_layers 3 \
@@ -35,7 +35,7 @@ export CUDA_DEVICE_ORDER=PCI_BUS_ID
 #     --device cuda:0 \
 #     --use_relative_space True \
 #     --seed 2222 \
-#     --save_path ./results/analysis/electricity_residuals_origin.npz \
+#     --save_path ./results/analysis/Weather/Weather_residuals_origin.npz \
 #     --use_origin_scale True
 
 # python3 -u ./src/analysis/residual_histogram.py \
@@ -56,30 +56,30 @@ export CUDA_DEVICE_ORDER=PCI_BUS_ID
 #   --feature_dims     : 指定特征维度（省略则自动选最多 12 个均匀分布维度）
 #   --n_cols           : grid 列数
 #   --separate_window  : 合并所有 window_start，只输出 2 张图（Y / ZPDN）
-python3 -u ./src/analysis/pdn_density_plot.py \
-    --npz_path  ./results/analysis/electricity_residuals_origin.npz \
-    --output_dir ./results/analysis \
-    --prefix    electricity_d261 \
-    --bins 60 \
-    --n_cols 3 \
-    --separate_window \
-    --feature_dims 290 \
-    --window_start 0 100 200 300 400 500 600 700 800 900 \
-    --window_size 12 \
-    --window_segment_size 4 \
-    --no_clip \
-    --skip_per_feature
-
-# # 若需指定特定特征维度（例如 0 1 2 10 50 100），可加 --feature_dims 参数：
 # python3 -u ./src/analysis/pdn_density_plot.py \
-#     --npz_path  ./results/analysis/electricity_residuals_origin.npz \
-#     --output_dir ./results/analysis \
-#     --prefix    electricity_S0_origin \
+#     --npz_path  ./results/analysis/ETTm2/ETTm2_residuals_origin.npz \
+#     --output_dir ./results/analysis/ETTm2 \
+#     --prefix    ETTm2_d0_window_12 \
+#     --bins 60 \
+#     --n_cols 3 \
+#     --separate_window \
+#     --feature_dims 0 \
+#     --window_start 710 720 730 740 750 760 770 780 790 \
+#     --window_size 12 \
+#     --window_segment_size 4 \
 #     --no_clip \
-#     --bins 120 \
-#     --separate_per_feature \
-#     --sample_n_overall 10 \
-#     --sample_n_per_feature 10 \
-#     --kde_max_points 200000 \
-#     --seed 0 \
-#     --skip_window
+#     --skip_per_feature
+
+# 若需指定特定特征维度（例如 0 1 2 10 50 100），可加 --feature_dims 参数：
+python3 -u ./src/analysis/pdn_density_plot.py \
+    --npz_path  ./results/analysis/Weather/Weather_residuals_origin.npz \
+    --output_dir ./results/analysis/Weather \
+    --prefix    Weather_Seed0_origin \
+    --no_clip \
+    --bins 120 \
+    --separate_per_feature \
+    --sample_n_overall 10 \
+    --sample_n_per_feature 10 \
+    --kde_max_points 200000 \
+    --seed 0 \
+    --skip_window

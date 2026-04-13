@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -20,29 +21,37 @@ class iReflow(nn.Module):
         self.seq_len = configs.seq_len
         self.pred_len = configs.pred_len
         self.d_model = configs.d_model
+        self.is_training = getattr(configs, 'is_training', 2)
         
         # Stage 1: iTransformer as Conditioner
         self.itransformer = iTransformer(configs)
         
         # 不确定性估计器（Aleatoric Uncertainty）
-        # 改进：使用encoder特征和预测残差来估计sigma
+        # 直接输出 sigma（标准差）
         # 输入：encoder特征 [B, D, d_model]
         # 输出：sigma [B, D, P] -> [B, P, D]
         self.uncertainty_estimator = nn.Sequential(
             nn.Linear(configs.d_model, configs.d_model // 2),
-            nn.ReLU(),
+            nn.GELU(),
+            nn.LayerNorm(configs.d_model // 2),
             # nn.Dropout(configs.dropout if hasattr(configs, 'dropout') else 0.1),
             nn.Linear(configs.d_model // 2, configs.pred_len),
-            nn.Softplus()  # 确保sigma > 0
+            nn.Softplus()
         )
         
         # 初始化：让sigma的初始值更合理（基于预测长度的经验值）
         # 使用较小的初始值，避免sigma过大导致训练不稳定
+        init_sigma = max(float(getattr(configs, 'sigma_init', 0.1)), 1e-6)
         for m in self.uncertainty_estimator.modules():
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight, gain=0.1)  # 较小的gain，让sigma初始值较小
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0.0)
+        # 仅调整最后一层 bias，使 Softplus(bias) ≈ init_sigma
+        last_linear = self.uncertainty_estimator[-2]
+        if isinstance(last_linear, nn.Linear) and last_linear.bias is not None:
+            sigma_bias = math.log(math.expm1(init_sigma))
+            nn.init.constant_(last_linear.bias, sigma_bias)
         
         # Stage 2: Velocity Network as Generator
         self.velocity_net = VelocityNetwork(
@@ -57,15 +66,30 @@ class iReflow(nn.Module):
         
         # 采样步数
         self.num_sampling_steps = configs.num_sampling_steps if hasattr(configs, 'num_sampling_steps') else 1
+        self.x0_dist = getattr(configs, 'x0_dist', 'pred_gaussian')
+        if self.x0_dist not in {'pred_gaussian', 'standard_normal'}:
+            raise ValueError(
+                f"Unsupported x0_dist: {self.x0_dist}. "
+                "Expected one of {'pred_gaussian', 'standard_normal'}."
+            )
 
         # Loss 权重（默认不改变现有行为）
+        self.point_loss_weight = getattr(configs, 'point_loss_weight', 1.0)
         self.nll_loss_weight = getattr(configs, 'nll_loss_weight', 1.0)
         self.velocity_loss_weight = getattr(configs, 'velocity_loss_weight', 1.0)
+        self.gaussian_nll_loss = nn.GaussianNLLLoss()
+
+    def _build_x0(self, y_hat, sigma, epsilon, temperature=1.0):
+        """根据配置构建 Source State X_0。"""
+        if self.x0_dist == 'pred_gaussian':
+            return y_hat + temperature * epsilon * sigma
+        # standard_normal: X_0 ~ N(0, I)
+        return temperature * epsilon
 
         
-    def get_encoder_features(self, x_enc, x_mark_enc):
+    def _get_encoder_outputs(self, x_enc, x_mark_enc):
         """
-        获取iTransformer编码器的变量特征H
+        获取编码器输出以及 uncertainty_estimator 的分布参数。
         
         Args:
             x_enc: [B, L, D] 历史序列
@@ -73,7 +97,9 @@ class iReflow(nn.Module):
         Returns:
             enc_features: [B, D, d_model] 变量特征（只包含原始变量，不含时间特征）
             y_hat: [B, P, D] 点预测
-            sigma: [B, P, D] 预测不确定性
+            s: [B, P, D] 对数方差 log(sigma^2)（由 sigma 派生，兼容旧接口）
+            var: [B, P, D] 方差
+            sigma: [B, P, D] 标准差
         """
         # 记录原始变量数量（用于过滤协变量）
         B, L, N = x_enc.shape  # N是原始变量数
@@ -112,23 +138,33 @@ class iReflow(nn.Module):
         
         # 估计不确定性: [B, D, d_model] -> [B, D, P] -> [B, P, D]
         sigma = self.uncertainty_estimator(enc_features).permute(0, 2, 1)
-        
-        # 如果使用了归一化，sigma也需要相应缩放
-        # 改进：使用相对标准差，避免sigma过大
+
+        # 如果使用了归一化，在 sigma 空间完成尺度变换
         if self.itransformer.use_norm:
-            # 使用相对标准差（相对于均值），让sigma更合理
-            # sigma = sigma * stdev[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1)
-            # 改进：使用较小的缩放因子，避免sigma过大
-            relative_std = stdev[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1)
-            # 限制sigma的最大值，避免过大
-            # 确保min和max都是Tensor，形状匹配
-            min_sigma = torch.full_like(sigma, 1e-6)
-            max_sigma = relative_std * 2.0
-            sigma = torch.clamp(sigma * relative_std, min=min_sigma, max=max_sigma)
+            scale = stdev[:, 0, :].unsqueeze(1).expand(-1, self.pred_len, -1)
+            sigma = sigma * scale
+            min_sigma = torch.full_like(sigma, 1e-3)
+            sigma = torch.clamp(sigma, min=min_sigma, max=2.0 * scale)
         else:
-            # 即使没有归一化，也限制sigma的范围
-            sigma = torch.clamp(sigma, min=1e-6, max=1.0)
+            sigma = torch.clamp(sigma, min=0.1)
+        var = sigma.pow(2)
+        s = torch.log(var)
+
+        return enc_features, y_hat, s, var, sigma
+
+    def get_encoder_features(self, x_enc, x_mark_enc):
+        """
+        获取iTransformer编码器的变量特征H
         
+        Args:
+            x_enc: [B, L, D] 历史序列
+            x_mark_enc: [B, L, T] 时间标记
+        Returns:
+            enc_features: [B, D, d_model] 变量特征（只包含原始变量，不含时间特征）
+            y_hat: [B, P, D] 点预测
+            sigma: [B, P, D] 预测标准差
+        """
+        enc_features, y_hat, _, _, sigma = self._get_encoder_outputs(x_enc, x_mark_enc)
         return enc_features, y_hat, sigma
     
     def compute_loss(self, x_enc, x_mark_enc, y_gt):
@@ -156,12 +192,11 @@ class iReflow(nn.Module):
         
         # Stage 1: 获取条件信息，计算负对数似然损失
         enc_features, y_hat, sigma = self.get_encoder_features(x_enc, x_mark_enc)
-        
-        # Gaussian NLL Loss (防止 Sigma 坍缩为0)
-        # 为了数值稳定，防止除以0
-        # var = sigma ** 2
-        # nll_loss = 0.5 * torch.log(var + 1e-6) + 0.5 * (y_gt - y_hat)**2 / (var + 1e-6)
-        # nll_loss = nll_loss.mean()
+
+        point_loss = F.mse_loss(y_hat, y_gt)
+        nll_loss = None
+        if self.is_training == 2:
+            nll_loss = self.gaussian_nll_loss(y_hat, y_gt, sigma.pow(2))
 
         # Stage 2: 构建Rectified Flow
         
@@ -169,11 +204,15 @@ class iReflow(nn.Module):
         epsilon = torch.randn_like(y_gt)
         
         # Source State: X_0 ~ N(y_hat, sigma^2)
-        # 我们不希望 Velocity Net 的 Loss 去反向修改 y_hat 和 sigma。
-        # 如果不 detach，Velocity Net 可能会为了好走直线，去扭曲 y_hat 的位置，导致点预测变差。
-        y_hat_flow = y_hat.detach()
-        sigma_flow = sigma.detach()
-        X_0 = y_hat_flow + epsilon * sigma_flow
+        # Stage 3 只训练 velocity_net，因此保持 detach；
+        # 端到端模式则移除 detach，使点预测、sigma 和速度场联合优化。
+        if self.is_training == 2:
+            y_hat_flow = y_hat
+            sigma_flow = sigma
+        else:
+            y_hat_flow = y_hat.detach()
+            sigma_flow = sigma.detach()
+        X_0 = self._build_x0(y_hat_flow, sigma_flow, epsilon, temperature=1.0)
         
         # Target State: X_1 = y_gt
         X_1 = y_gt
@@ -195,28 +234,23 @@ class iReflow(nn.Module):
         # MSE Loss on velocity
         velocity_loss = F.mse_loss(v_pred, v_target)
         
-        # total_loss = self.nll_loss_weight * nll_loss + self.velocity_loss_weight * velocity_loss
-        total_loss = velocity_loss
+        total_loss = self.velocity_loss_weight * velocity_loss
+        if self.is_training == 2:
+            total_loss = total_loss + self.point_loss_weight * point_loss
+            total_loss = total_loss + self.nll_loss_weight * nll_loss
 
         loss_dict = {
             'total_loss': total_loss.item(),
+            'point_loss': point_loss.item(),
             'velocity_loss': velocity_loss.item(),
-            # 'nll_loss': nll_loss.item(),
-            # 'nll_loss_weight': self.nll_loss_weight,
-            # 'velocity_loss_weight': self.velocity_loss_weight,
             'mean_sigma': sigma.mean().item(),
             'min_sigma': sigma.min().item(),
             'max_sigma': sigma.max().item(),
-            'mae_point': F.l1_loss(y_hat, y_gt).item()
+            'mae_point': F.l1_loss(y_hat, y_gt).item(),
+            'mse_point': point_loss.item(),
         }
-
-        # 记录 gate 的均值/方差（来自 VelocityNetwork.confidence_gate）
-        gate_mean = getattr(self.velocity_net, "last_gate_mean", None)
-        gate_var = getattr(self.velocity_net, "last_gate_var", None)
-        if gate_mean is not None:
-            loss_dict["gate_mean"] = float(gate_mean)
-        if gate_var is not None:
-            loss_dict["gate_var"] = float(gate_var)
+        if nll_loss is not None:
+            loss_dict['nll_loss'] = nll_loss.item()
         
         return total_loss, loss_dict
     
@@ -245,18 +279,26 @@ class iReflow(nn.Module):
         
         # Stage 2: 采样初始化
         samples = []
+        x_samples = []
+        z_samples = []
         
         for _ in range(num_samples):
             # 采样随机噪声
             epsilon = torch.randn(B, self.pred_len, D, device=device)
             
-            # 初始状态: X_0 = y_hat + temperature * epsilon * sigma
-            X_tau = y_hat + temperature * epsilon * sigma
-            
+            # 初始状态 X_0
+            X_tau = self._build_x0(y_hat, sigma, epsilon, temperature=temperature)
+
+            cur_x_traj = []
+            cur_z_traj = []
+
             # Stage 3: ODE求解
             if self.num_sampling_steps == 1:
                 # One-step generation (极快速)
                 tau = torch.zeros(B, device=device)
+                z_tau = (X_tau - y_hat) / sigma
+                cur_z_traj.append(z_tau)
+                cur_x_traj.append(X_tau)
                 v = self.velocity_net(X_tau, tau, enc_features, y_hat, sigma)
                 X_pred = X_tau + v
             else:
@@ -267,16 +309,29 @@ class iReflow(nn.Module):
                     tau_val = i * dt
                     tau = torch.ones(B, device=device) * tau_val
                     v = self.velocity_net(X_tau, tau, enc_features, y_hat, sigma)
+
+                    z_tau = (X_tau - y_hat) / sigma
+                    cur_z_traj.append(z_tau)
+                    cur_x_traj.append(X_tau)
+
                     # Euler step
                     X_tau = X_tau + v * dt
                 X_pred = X_tau
             
             samples.append(X_pred)
+
+            cur_z_traj = torch.stack(cur_z_traj, dim=0) # [num_sampling_steps, B, P, D]
+            cur_x_traj = torch.stack(cur_x_traj, dim=0) # [num_sampling_steps, B, P, D]
+            z_samples.append(cur_z_traj)
+            x_samples.append(cur_x_traj)
         
         # [num_samples, B, P, D] -> [B, num_samples, P, D]
         samples = torch.stack(samples, dim=1)
+
+        z_samples = torch.stack(z_samples, dim=2) # [num_sampling_steps, B, num_samples, P, D]
+        x_samples = torch.stack(x_samples, dim=2) # [num_sampling_steps, B, num_samples, P, D]
         
-        return samples, y_hat, sigma
+        return samples, y_hat, sigma, z_samples, x_samples
     
     def forward(self, x_enc, x_mark_enc, x_dec=None, x_mark_dec=None, y_gt=None, mode='train'):
         """
@@ -318,4 +373,3 @@ class iReflow(nn.Module):
             sigma: [B, P, D] 不确定性
         """
         return self.sample(x_enc, x_mark_enc, num_samples, temperature)
-

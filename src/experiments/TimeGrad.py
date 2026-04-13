@@ -47,7 +47,22 @@ class TimeGradParameters:
 class TimeGradForecast(ProbForecastExp, TimeGradParameters):
     model_type: str = "TimeGrad"
     def _init_model(self):
-        self.minisample = 100
+        max_supported_lag = self.windows - self.context_length
+        valid_lags = [lag for lag in self.lags_seq if lag <= max_supported_lag]
+        if not valid_lags:
+            raise ValueError(
+                "TimeGrad requires at least one lag compatible with the "
+                f"current window/context_length setup, but got lags={self.lags_seq}, "
+                f"windows={self.windows}, context_length={self.context_length}."
+            )
+        if valid_lags != self.lags_seq:
+            print(
+                "Adjusting TimeGrad lags_seq from "
+                f"{self.lags_seq} to {valid_lags} for windows={self.windows} "
+                f"and context_length={self.context_length}."
+            )
+        self.lags_seq = valid_lags
+        self.minisample = min(100, self.num_samples)
         self.model = TimeGrad(
             pred_len=self.pred_len,
             sequence_length=self.windows,
@@ -105,12 +120,14 @@ class TimeGradForecast(ProbForecastExp, TimeGradParameters):
         # label_len = 1
         
         samples = []
-        for i in range(self.num_samples//self.minisample):
+        sample_batches = max(1, (self.num_samples + self.minisample - 1) // self.minisample)
+        for _ in range(sample_batches):
             # B, S, O, N
             output = self.model(batch_x, batch_y, batch_x_date_enc, batch_y_date_enc, train=False)
             samples.append(output)
             
         output = torch.concat(samples, dim=1) # B, S, O, N
+        output = output[:, : self.num_samples]
         output = output.permute(0, 2, 3, 1) # B, O, N, S
         return output, batch_y
 

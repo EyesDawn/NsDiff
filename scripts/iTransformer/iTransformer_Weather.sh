@@ -2,7 +2,7 @@
 
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export PYTHONPATH=./
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=6
 
 model_name=iTransformer
 WANDB_PROJECT="iTransformer"
@@ -24,8 +24,10 @@ python -u ./src/experiments/iTransformer.py \
   --dec_in 21 \
   --c_out 21 \
   --des 'Exp' \
-  --d_model 512\
-  --d_ff 512\
+  --d_model 512 \
+  --d_ff 512 \
+  --itr 1 \
+  --checkpoints ./results/runs/iTransformer/
 
 # python -u ./src/experiments/iTransformer.py \
 #   --is_training 1 \

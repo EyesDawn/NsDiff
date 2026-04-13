@@ -38,6 +38,32 @@ class UncertaintyEstimatorPretrainExp(iReflowExp):
     
     # 覆盖默认配置
     is_training: int = 1  # 固定为1，表示只训练部分模型
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.gaussian_nll_loss = torch.nn.GaussianNLLLoss()
+
+    def _get_scaler_std_tensor(self, dtype: torch.dtype, device: torch.device) -> torch.Tensor | None:
+        """
+        Return dataset-level scaler std as a tensor for inverse-transforming sigma.
+
+        Supports both the local `torch_timeseries` StandardScaler (`std`) and
+        sklearn-like naming (`std_` / `scale_`) for robustness.
+        """
+        if not hasattr(self, "scaler"):
+            return None
+
+        std = None
+        if hasattr(self.scaler, "std"):
+            std = getattr(self.scaler, "std")
+        elif hasattr(self.scaler, "std_"):
+            std = getattr(self.scaler, "std_")
+        elif hasattr(self.scaler, "scale_"):
+            std = getattr(self.scaler, "scale_")
+
+        if std is None:
+            return None
+        return torch.as_tensor(std, device=device, dtype=dtype).view(1, 1, -1)
     
     def _init_optimizer(self):
         """
@@ -87,15 +113,12 @@ class UncertaintyEstimatorPretrainExp(iReflowExp):
             loss_dict: dict 包含详细损失和指标
         """
         # 获取编码器特征和预测
-        enc_features, y_hat, sigma = self.model.get_encoder_features(
+        _, y_hat, sigma = self.model.get_encoder_features(
             batch_x, batch_x_date_enc
         )
         
         # 只计算 NLL Loss（Gaussian Negative Log-Likelihood）
-        # NLL = 0.5 * log(sigma^2) + 0.5 * (y_gt - y_hat)^2 / sigma^2
-        var = sigma ** 2
-        nll_loss = 0.5 * torch.log(var + 1e-6) + 0.5 * (batch_y - y_hat)**2 / (var + 1e-6)
-        nll_loss = nll_loss.mean()
+        nll_loss = self.gaussian_nll_loss(y_hat, batch_y, sigma.pow(2))
         
         # 记录详细指标
         loss_dict = {
@@ -204,14 +227,12 @@ class UncertaintyEstimatorPretrainExp(iReflowExp):
                 batch_y_date_enc = batch_y_date_enc.to(self.device).float()
                 
                 # 获取预测和 sigma
-                enc_features, y_hat, sigma = self.model.get_encoder_features(
+                _, y_hat, sigma = self.model.get_encoder_features(
                     batch_x, batch_x_date_enc
                 )
                 
-                # 计算 NLL Loss
-                var = sigma ** 2
-                nll_loss = 0.5 * torch.log(var + 1e-6) + 0.5 * (batch_y - y_hat)**2 / (var + 1e-6)
-                nll_loss = nll_loss.mean()
+                # 计算 NLL Loss（与训练阶段保持一致）
+                nll_loss = self.gaussian_nll_loss(y_hat, batch_y, sigma.pow(2))
                 
                 val_losses.append(nll_loss.item())
                 val_metrics['nll_loss'].append(nll_loss.item())
@@ -231,7 +252,7 @@ class UncertaintyEstimatorPretrainExp(iReflowExp):
         delattr(self, '_num_samples_for_eval')
         return result
     
-    def _evaluate(self, dataloader):
+    def _evaluate(self, dataloader, plot=False):
         """
         Stage 2 专用评估逻辑（方案 A）：
         
@@ -592,16 +613,9 @@ class UncertaintyEstimatorPretrainExp(iReflowExp):
                     B, P, D = y_hat.shape
                     y_hat_flat = y_hat.reshape(B * P, D)
                     y_hat_orig = self.scaler.inverse_transform(y_hat_flat).reshape(B, P, D)
-                    # 对 sigma，仅按尺度因子放大，不做平移
-                    # 这里简化处理：用 (x_raw_std / x_scaled_std) 的近似常数因子，
-                    # 对于 StandardScaler 这等价于乘以 dataset 级别的 std。
-                    if hasattr(self.scaler, "std_"):
-                        std = torch.as_tensor(
-                            self.scaler.std_, device=device, dtype=sigma.dtype
-                        ).view(1, 1, -1)
-                        sigma_orig = sigma * std
-                    else:
-                        sigma_orig = sigma
+                    # 对 sigma，仅按尺度因子放大，不做平移。
+                    std = self._get_scaler_std_tensor(dtype=sigma.dtype, device=device)
+                    sigma_orig = sigma * std if std is not None else sigma
                     y_hat = y_hat_orig
                     sigma = sigma_orig
 
@@ -669,10 +683,37 @@ class UncertaintyEstimatorPretrainExp(iReflowExp):
         else:
             return None
 
+    @torch.no_grad()
+    def export_decoupling_case_study_data_on_test(
+        self,
+        seed: int = 1,
+        save_path: str = "./results/analysis/Traffic/Traffic_decoupling_case_study_data.npz",
+        eps: float = 1e-6,
+        return_result: bool = False,
+    ) -> Dict[str, np.ndarray] | None:
+        """
+        Dedicated exporter for Experiment 1.
+
+        Always writes raw-scale future targets and raw-scale PDN macro statistics:
+          - Y: raw future target
+          - mu_X / sigma_X: raw historical RevIN statistics
+          - mu_Y_hat / sigma_Y_hat: raw-scale predictive macro components
+          - Z_PDN: PDN residuals computed in raw scale
+
+        This avoids ambiguity around whether the saved tensors are in normalized
+        or original scale and is intended for `src/analysis/decoupling_case_study.py`.
+        """
+        return self.extract_residuals_on_test(
+            seed=seed,
+            save_path=save_path,
+            use_origin_scale=True,
+            eps=eps,
+            return_result=return_result,
+        )
+
 
 if __name__ == '__main__':
     setproctitle.setproctitle('UncertaintyEstimator_Pretrain')
     
     import fire
     fire.Fire(UncertaintyEstimatorPretrainExp)
-

@@ -66,7 +66,7 @@ class TimeDiffForecast(ProbForecastExp, TimeDiffParameters):
     model_type: str = "TimeDiff"
     def _init_model(self):
         
-        self.label_len = self.pred_len//2
+        self.label_len = min(self.pred_len // 2, self.windows)
         args_dict = {
             "seq_len": self.windows,
             "device": self.device,

@@ -25,6 +25,7 @@ wandb
 .codex
 tmp_analysis_test
 docs/paper
+249-container.txt
 
 # dataset suffix
 *.txt.gz

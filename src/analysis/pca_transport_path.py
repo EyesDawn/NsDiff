@@ -13,6 +13,7 @@ and produces three publication-ready single-panel figures:
 Design follows `docs/Analytical_experiments.md`:
   - rank test windows by a deterministic drift score;
   - retain the high-drift subset and sample a fixed number of windows;
+  - trim extreme PDN-endpoint outliers that are dominated by near-zero scales;
   - construct the same OT interpolation path in raw and PDN spaces;
   - fit PCA independently per space for visualization.
 """
@@ -123,18 +124,34 @@ class WindowSelection:
     drift_scores: np.ndarray
     candidate_indices: np.ndarray
     selected_indices: np.ndarray
+    candidate_indices_before_outlier_filter: np.ndarray | None = None
+    outlier_scores: np.ndarray | None = None
+    outlier_threshold: float | None = None
+    outlier_quantile: float | None = None
+
+
+def _compute_normalized_endpoint_rms(
+    y: np.ndarray,
+    mu_hat: np.ndarray,
+    sigma_hat: np.ndarray,
+) -> np.ndarray:
+    z_target = (y - mu_hat) / sigma_hat
+    return np.sqrt(np.mean(np.square(z_target, dtype=np.float32), axis=(1, 2), dtype=np.float32))
 
 
 def _select_windows(
     y: np.ndarray,
     mu_x: np.ndarray,
     sigma_x: np.ndarray,
+    mu_hat: np.ndarray,
+    sigma_hat: np.ndarray,
     num_windows: int,
     high_drift_ratio: float,
     min_high_drift_windows: int,
     seed: int,
     eps: float,
     drift_feature_dim: int | None = None,
+    normalized_outlier_quantile: float = 1.0,
 ) -> WindowSelection:
     drift_scores_all = _compute_drift_scores(y=y, mu_x=mu_x, sigma_x=sigma_x, eps=eps)
     if drift_feature_dim is None:
@@ -152,6 +169,25 @@ def _select_windows(
         fraction=high_drift_ratio,
         min_count=max(min_high_drift_windows, num_windows),
     )
+    candidate_idx_before_filter = candidate_idx.copy()
+    outlier_scores_all = _compute_normalized_endpoint_rms(y=y, mu_hat=mu_hat, sigma_hat=sigma_hat)
+    outlier_threshold = None
+    if normalized_outlier_quantile < 1.0:
+        if not (0.0 < normalized_outlier_quantile < 1.0):
+            raise ValueError("normalized_outlier_quantile must be within (0, 1] when enabled.")
+        candidate_outlier_scores = outlier_scores_all[candidate_idx]
+        outlier_threshold = float(
+            np.quantile(candidate_outlier_scores, normalized_outlier_quantile)
+        )
+        keep_mask = candidate_outlier_scores <= outlier_threshold
+        if int(np.sum(keep_mask)) < num_windows:
+            keep_order = np.argsort(candidate_outlier_scores)
+            keep_idx = keep_order[:num_windows]
+            keep_mask = np.zeros_like(candidate_outlier_scores, dtype=bool)
+            keep_mask[keep_idx] = True
+            outlier_threshold = float(candidate_outlier_scores[keep_idx[-1]])
+        candidate_idx = candidate_idx[keep_mask]
+
     rng = np.random.default_rng(seed)
     if candidate_idx.shape[0] <= num_windows:
         selected = candidate_idx.copy()
@@ -164,6 +200,10 @@ def _select_windows(
         drift_scores=window_scores.astype(np.float64),
         candidate_indices=candidate_idx,
         selected_indices=selected.astype(np.int64),
+        candidate_indices_before_outlier_filter=candidate_idx_before_filter.astype(np.int64),
+        outlier_scores=outlier_scores_all.astype(np.float64),
+        outlier_threshold=outlier_threshold,
+        outlier_quantile=None if normalized_outlier_quantile >= 1.0 else normalized_outlier_quantile,
     )
 
 
@@ -452,11 +492,27 @@ def _save_metadata(
         "dataset_name": dataset_name,
         "seed": int(seed),
         "drift_feature_dim": None if drift_feature_dim is None else int(drift_feature_dim),
+        "candidate_count_before_outlier_filter": int(
+            selection.candidate_indices_before_outlier_filter.shape[0]
+            if selection.candidate_indices_before_outlier_filter is not None
+            else selection.candidate_indices.shape[0]
+        ),
         "candidate_count": int(selection.candidate_indices.shape[0]),
+        "normalized_outlier_quantile": (
+            None if selection.outlier_quantile is None else float(selection.outlier_quantile)
+        ),
+        "normalized_outlier_threshold": (
+            None if selection.outlier_threshold is None else float(selection.outlier_threshold)
+        ),
         "selected_indices": [int(v) for v in selection.selected_indices.tolist()],
         "selected_drift_scores": [
             float(selection.drift_scores[int(v)]) for v in selection.selected_indices.tolist()
         ],
+        "selected_normalized_endpoint_rms": (
+            []
+            if selection.outlier_scores is None
+            else [float(selection.outlier_scores[int(v)]) for v in selection.selected_indices.tolist()]
+        ),
         "tau_values": [float(v) for v in tau_values.tolist()],
         "pca_components": int(pca_components),
         "explained_variance_ratio": explained_variance_ratio,
@@ -484,6 +540,7 @@ def plot_pca_transport_path(
     sample_batch_size: int = 64,
     experiment_subdir: str = "exp2_pca_transport_path",
     drift_feature_dim: int | None = None,
+    normalized_outlier_quantile: float = 1.0,
     eps: float = 1e-6,
 ) -> dict[str, Any]:
     data = np.load(npz_path)
@@ -519,12 +576,15 @@ def plot_pca_transport_path(
         y=y,
         mu_x=mu_x,
         sigma_x=sigma_x,
+        mu_hat=mu_hat,
+        sigma_hat=sigma_hat,
         num_windows=num_windows,
         high_drift_ratio=high_drift_ratio,
         min_high_drift_windows=min_high_drift_windows,
         seed=seed,
         eps=eps,
         drift_feature_dim=drift_feature_dim,
+        normalized_outlier_quantile=normalized_outlier_quantile,
     )
     idx = selection.selected_indices
     y_sel = y[idx]
@@ -624,7 +684,18 @@ def plot_pca_transport_path(
 
     return {
         "selected_indices": [int(v) for v in idx.tolist()],
+        "candidate_count_before_outlier_filter": int(
+            selection.candidate_indices_before_outlier_filter.shape[0]
+            if selection.candidate_indices_before_outlier_filter is not None
+            else selection.candidate_indices.shape[0]
+        ),
         "candidate_count": int(selection.candidate_indices.shape[0]),
+        "normalized_outlier_quantile": (
+            None if selection.outlier_quantile is None else float(selection.outlier_quantile)
+        ),
+        "normalized_outlier_threshold": (
+            None if selection.outlier_threshold is None else float(selection.outlier_threshold)
+        ),
         "tau_values": [float(v) for v in tau_arr.tolist()],
         "pca_components": int(raw_ipca.n_components_),
         "output_paths": output_paths,
@@ -690,6 +761,15 @@ def main() -> None:
         default=None,
         help="Optional feature index used for drift-based window selection. Defaults to mean drift.",
     )
+    parser.add_argument(
+        "--normalized_outlier_quantile",
+        type=float,
+        default=1.0,
+        help=(
+            "Optional upper quantile used to trim extreme PDN-endpoint residual RMS values "
+            "within the high-drift candidate pool before sampling. Set to 1.0 to disable."
+        ),
+    )
     parser.add_argument("--eps", type=float, default=1e-6)
     args = parser.parse_args()
 
@@ -707,6 +787,7 @@ def main() -> None:
         sample_batch_size=args.sample_batch_size,
         experiment_subdir=args.experiment_subdir,
         drift_feature_dim=args.drift_feature_dim,
+        normalized_outlier_quantile=args.normalized_outlier_quantile,
         eps=args.eps,
     )
     print(json.dumps(result, indent=2, ensure_ascii=False))

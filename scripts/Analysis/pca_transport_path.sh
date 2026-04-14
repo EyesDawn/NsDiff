@@ -14,6 +14,7 @@ MIN_HIGH_DRIFT_WINDOWS="${MIN_HIGH_DRIFT_WINDOWS:-64}"
 SEED="${SEED:-2029}"
 PCA_COMPONENTS="${PCA_COMPONENTS:-8}"
 SAMPLE_BATCH_SIZE="${SAMPLE_BATCH_SIZE:-64}"
+NORMALIZED_OUTLIER_QUANTILE="${NORMALIZED_OUTLIER_QUANTILE:-0.99}"
 
 if [ ! -f "${NPZ_PATH}" ]; then
     echo "Missing input artifact: ${NPZ_PATH}"
@@ -32,4 +33,5 @@ python3 -u ./src/analysis/pca_transport_path.py \
     --tau_values 0.0 0.25 0.5 0.75 1.0 \
     --seed "${SEED}" \
     --pca_components "${PCA_COMPONENTS}" \
-    --sample_batch_size "${SAMPLE_BATCH_SIZE}"
+    --sample_batch_size "${SAMPLE_BATCH_SIZE}" \
+    --normalized_outlier_quantile "${NORMALIZED_OUTLIER_QUANTILE}"

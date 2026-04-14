@@ -52,7 +52,7 @@ export CUDA_VISIBLE_DEVICES=${GPU_ID}
 DEVICE="cuda:0"
 
 # 实验配置
-SEEDS='[2022, 2023]'
+SEEDS='[2038]'
 CHECKPOINTS="./results/runs/iTransformer/"
 ITR=1
 
@@ -64,7 +64,7 @@ echo "Stage 2: Pretraining Uncertainty Estimator"
 echo "============================================================================"
 echo ""
 
-STAGE2_WANDB_PROJECT="iReflow-Stage2-Uncertainty"
+STAGE2_WANDB_PROJECT="iReflow-Stage2-Uncertainty-ljl"
 STAGE2_CHECKPOINTS="./results/runs/iTransformer/"
 STAGE2_LR=0.0001
 
@@ -115,7 +115,7 @@ echo "Stage 3: Training Velocity Network"
 echo "============================================================================"
 echo ""
 
-STAGE3_WANDB_PROJECT="iReflow-Stage3-Velocity"
+STAGE3_WANDB_PROJECT="iReflow-Stage3-Velocity-ljl"
 STAGE3_CHECKPOINTS="./results/runs/iTransformer/"
 STAGE3_LR=0.0001
 

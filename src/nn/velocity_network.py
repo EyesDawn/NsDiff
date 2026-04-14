@@ -178,24 +178,63 @@ class VelocityNetwork(nn.Module):
         
         # Layer Norm
         self.norm = nn.LayerNorm(d_model)
-    
+
+        # prior prediction
+        self.mu_pre = nn.Sequential(nn.Linear(3*d_model, d_model),
+                                    nn.ReLU(),
+                                    nn.Linear(self.d_model, pred_len))
+        self.sigma_pre = nn.Sequential(nn.Linear(2*d_model, d_model),
+                                    nn.ReLU(),
+                                    nn.Linear(self.d_model, pred_len))
+        self.tau_emb = nn.Linear(d_model, d_model)
+        self.mu_emb = nn.Linear(pred_len, d_model)
+        self.sigma_emb = nn.Linear(pred_len, d_model)
+        self.x_emb = nn.Linear(pred_len, d_model)
+
+    def prior_prediction(self, mu, sigma, tau, x_tau, eps=1e-6):
+        mu = mu.permute(0, 2, 1)
+        sigma = sigma.permute(0, 2, 1)
+        x_tau = x_tau.permute(0, 2, 1)
+
+        # 先把 sigma 转成 log_sigma
+        sigma = torch.clamp(sigma, min=eps)
+        log_sigma = torch.log(sigma)
+
+        mu = self.mu_emb(mu)
+        log_sigma = self.sigma_emb(log_sigma)
+        x_tau = self.x_emb(x_tau)
+
+        time_emb = self.time_embedding(tau)
+        time_emb = self.tau_emb(time_emb).unsqueeze(1)
+        time_emb = time_emb.expand(-1, mu.size(1), -1)
+
+        mu_tau = self.mu_pre(torch.cat([mu, time_emb, x_tau], dim=-1))
+        log_sigma_tau = self.sigma_pre(torch.cat([log_sigma, time_emb], dim=-1))
+
+        # 再从 log_sigma_tau 转回 sigma_tau
+        sigma_tau = torch.exp(log_sigma_tau)
+        # 更稳的话也可以用：
+        # sigma_tau = F.softplus(log_sigma_tau) + eps
+
+        return mu_tau.permute(0, 2, 1), sigma_tau.permute(0, 2, 1)
+
+
     def forward(self, x_tau, tau, enc_features, y_hat, sigma):
         """
         Args:
-            x_tau: [B, P, D] 当前流状态
-            tau: [B] or [B, 1] flow time ∈ [0, 1]
-            enc_features: [B, D, d_model] iTransformer编码器输出的变量特征H
-            y_hat: [B, P, D] iTransformer的点预测
-            sigma: [B, P, D] 预测不确定性
+            x_tau: [B, P, D]
+            tau: [B] or [B, 1]
+            enc_features: [B, D, d_model]
+            y_hat: [B, P, D]
+            sigma: [B, P, D]
         Returns:
-            v: [B, P, D] 速度场
+            v: [B, P, D]
         """
-        
-        # Step 0: 坐标变换到相对空间 (可选，通过配置控制)
+        _, sigma = self.prior_prediction(y_hat, sigma, tau, x_tau)
+
         if self.use_relative_space:
-            # sigma_safe = torch.clamp(sigma, min=0.01)  # 数值稳定性
-            z_tau = (x_tau - y_hat) / sigma
-            # z_tau = torch.clamp(z_tau, -10, 10)  # 防止极端值
+            sigma_safe = torch.clamp(sigma, min=1e-4)
+            z_tau = (x_tau - y_hat) / sigma_safe
         else:
             z_tau = x_tau
 
@@ -228,4 +267,53 @@ class VelocityNetwork(nn.Module):
             v = u
 
         return v
+    
+    # def forward(self, x_tau, tau, enc_features, y_hat, sigma):
+    #     """
+    #     Args:
+    #         x_tau: [B, P, D] 当前流状态
+    #         tau: [B] or [B, 1] flow time ∈ [0, 1]
+    #         enc_features: [B, D, d_model] iTransformer编码器输出的变量特征H
+    #         y_hat: [B, P, D] iTransformer的点预测
+    #         sigma: [B, P, D] 预测不确定性
+    #     Returns:
+    #         v: [B, P, D] 速度场
+    #     """    
+    #     # Step 0: 坐标变换到相对空间 (可选，通过配置控制)
+    #     if self.use_relative_space:
+    #         # sigma_safe = torch.clamp(sigma, min=0.01)  # 数值稳定性
+    #         z_tau = (x_tau - y_hat) / sigma
+    #         # z_tau = torch.clamp(z_tau, -10, 10)  # 防止极端值
+    #     else:
+    #         z_tau = x_tau
+
+    #     # Step 1: Inverted Embedding
+    #     # [B, P, D] -> [B, D, P]
+    #     x = z_tau.permute(0, 2, 1)
+    #     # [B, D, P] -> [B, D, d_model]
+    #     x = self.value_embedding(x)
+    #     x = self.dropout_emb(x)
+        
+    #     # Step 2: Time Embedding
+    #     time_emb = self.time_embedding(tau)  # [B, d_model]
+        
+    #     # Step 3: Variate-Cross-Attention with time injection
+    #     for layer in self.layers:
+    #         x = layer(x, enc_features, time_emb)
+        
+    #     x = self.norm(x)
+        
+    #     # Step 4: Final Projection
+    #     # [B, D, d_model] -> [B, D, P]
+    #     v = self.projector(x)
+    #     # [B, D, P] -> [B, P, D]
+    #     u = v.permute(0, 2, 1)
+
+    #     # Step 5: 逆变换回绝对空间
+    #     if self.use_relative_space:
+    #         v = sigma * u
+    #     else:
+    #         v = u
+
+    #     return v
 

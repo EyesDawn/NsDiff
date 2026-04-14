@@ -52,7 +52,7 @@ export CUDA_VISIBLE_DEVICES=${GPU_ID}
 DEVICE="cuda:0"
 
 # 实验配置
-SEEDS='[2038]'
+SEEDS='[2039]'
 CHECKPOINTS="./results/runs/iTransformer/"
 ITR=1
 

@@ -183,7 +183,7 @@ class VelocityNetwork(nn.Module):
         self.mu_pre = nn.Sequential(nn.Linear(3*d_model, d_model),
                                     nn.ReLU(),
                                     nn.Linear(self.d_model, pred_len))
-        self.sigma_pre = nn.Sequential(nn.Linear(2*d_model, d_model),
+        self.sigma_pre = nn.Sequential(nn.Linear(3*d_model, d_model),
                                     nn.ReLU(),
                                     nn.Linear(self.d_model, pred_len))
         self.tau_emb = nn.Linear(d_model, d_model)
@@ -209,7 +209,7 @@ class VelocityNetwork(nn.Module):
         time_emb = time_emb.expand(-1, mu.size(1), -1)
 
         mu_tau = self.mu_pre(torch.cat([mu, time_emb, x_tau], dim=-1))
-        log_sigma_tau = self.sigma_pre(torch.cat([log_sigma, time_emb], dim=-1))
+        log_sigma_tau = self.sigma_pre(torch.cat([log_sigma, time_emb, x_tau], dim=-1))
 
         # 再从 log_sigma_tau 转回 sigma_tau
         sigma_tau = torch.exp(log_sigma_tau)

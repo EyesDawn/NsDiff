@@ -9,10 +9,12 @@
 #   2) 可复现的 JSON 元数据（记录选中的窗口索引及相关统计）
 #
 python3 -u ./src/analysis/decoupling_case_study.py \
-    --npz_path ./results/analysis/ETTm1/ETTm1_decoupling_case_study_data.npz \
-    --output_path ./results/analysis/ETTm1/ETTm1_decoupling_case_study.pdf \
-    --metadata_path ./results/analysis/ETTm1/ETTm1_decoupling_case_study.json \
+    --npz_path ./results/analysis/ETTm1/ETTm1_decoupling_case_study_data_seed_2029.npz \
+    --output_path ./results/analysis/ETTm1/ETTm1_decoupling_case_study_seed_2029_feature_2.pdf \
+    --metadata_path ./results/analysis/ETTm1/ETTm1_decoupling_case_study_seed_2029_feature_2.json \
     --dataset_name ETTm1 \
+    --feature_dim 2 \
     --num_samples 6 \
     --high_drift_ratio 0.2 \
-    --min_high_drift_windows 24
+    --min_high_drift_windows 24 \
+    --min_past_std 0.02

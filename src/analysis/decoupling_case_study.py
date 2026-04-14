@@ -134,6 +134,46 @@ def _future_stats(y: np.ndarray, eps: float) -> tuple[np.ndarray, np.ndarray]:
     return mu_f, sigma_f
 
 
+def _estimate_positive_floor(x: np.ndarray, eps: float = 1e-12) -> float:
+    positive = np.asarray(x, dtype=np.float64)
+    positive = positive[np.isfinite(positive) & (positive > eps)]
+    if positive.size == 0:
+        return 0.0
+    return float(np.min(positive))
+
+
+def _compute_adaptive_std_ratio_ceiling(
+    future_std: np.ndarray,
+    past_std: np.ndarray,
+    base_valid_mask: np.ndarray,
+    iqr_multiplier: float,
+    eps: float,
+    min_valid_windows: int,
+) -> np.ndarray:
+    """
+    Compute a per-feature adaptive upper ceiling for future/past std ratio.
+
+    We work in log-ratio space and use an upper IQR fence:
+        log_ratio <= Q3 + iqr_multiplier * (Q3 - Q1)
+
+    This suppresses pathological windows whose past variance is abnormally small
+    relative to future variance, without requiring a hand-tuned absolute ratio.
+    """
+    _, _, num_dims = future_std.shape[0], future_std.shape[1] if future_std.ndim > 1 else 1, past_std.shape[1]
+    ceilings = np.full((num_dims,), np.inf, dtype=np.float64)
+    ratio = future_std / np.maximum(past_std, eps)
+
+    for d in range(num_dims):
+        valid_idx = np.flatnonzero(base_valid_mask[:, d])
+        if valid_idx.size < min_valid_windows:
+            continue
+        log_ratio = np.log(np.maximum(ratio[valid_idx, d], eps))
+        q1, q3 = np.quantile(log_ratio, [0.25, 0.75])
+        iqr = q3 - q1
+        ceilings[d] = float(np.exp(q3 + iqr_multiplier * iqr))
+    return ceilings
+
+
 def _compute_drift_scores(
     y: np.ndarray,
     mu_x: np.ndarray,
@@ -200,6 +240,9 @@ def _select_windows(
     min_high_drift_windows: int,
     min_future_std: float,
     min_past_std: float,
+    past_std_floor: float,
+    min_past_std_floor_multiplier: float,
+    max_future_to_past_std_ratio: float,
     min_index_gap: int,
     eps: float,
 ) -> SelectionResult:
@@ -215,8 +258,15 @@ def _select_windows(
     past_std_raw = sigma_x[:, 0, feature_dim]
     oracle_z = (y_d - future_mean[:, None]) / future_std[:, None]
 
+    effective_past_std_threshold = max(
+        float(min_past_std),
+        float(min_past_std_floor_multiplier) * float(past_std_floor),
+    )
+
     valid_idx = np.flatnonzero(
-        (future_std_raw > min_future_std) & (past_std_raw > min_past_std)
+        (future_std_raw > min_future_std)
+        & (past_std_raw > effective_past_std_threshold)
+        & ((future_std_raw / np.maximum(past_std_raw, eps)) <= max_future_to_past_std_ratio)
     )
     if valid_idx.size < num_samples:
         raise ValueError(
@@ -394,6 +444,9 @@ def plot_decoupling_case_study(
     experiment_subdir: str = "exp1_decoupling_case_study",
     min_future_std: float = 1e-3,
     min_past_std: float = 1e-3,
+    min_past_std_floor_multiplier: float = 5.0,
+    future_to_past_std_ratio_iqr_multiplier: float = 1.5,
+    min_ratio_filter_windows: int = 64,
     min_index_gap: int | None = None,
     eps: float = 1e-6,
 ) -> dict[str, Any]:
@@ -418,6 +471,12 @@ def plot_decoupling_case_study(
         raise ValueError("num_samples must be at least 2 for a comparative case study.")
     if not (0.0 < high_drift_ratio <= 1.0):
         raise ValueError("high_drift_ratio must be within (0, 1].")
+    if min_past_std_floor_multiplier < 0.0:
+        raise ValueError("min_past_std_floor_multiplier must be non-negative.")
+    if future_to_past_std_ratio_iqr_multiplier < 0.0:
+        raise ValueError("future_to_past_std_ratio_iqr_multiplier must be non-negative.")
+    if min_ratio_filter_windows < 4:
+        raise ValueError("min_ratio_filter_windows must be at least 4.")
     if min_index_gap is None:
         min_index_gap = horizon
     if min_index_gap < 0:
@@ -426,7 +485,22 @@ def plot_decoupling_case_study(
     drift_scores_all = _compute_drift_scores(y, mu_x, sigma_x, eps=eps)
     future_std_all = np.std(y, axis=1)
     past_std_all = sigma_x[:, 0, :]
-    valid_mask_all = (future_std_all > min_future_std) & (past_std_all > min_past_std)
+    past_std_floor = _estimate_positive_floor(past_std_all, eps=eps)
+    effective_min_past_std = max(
+        float(min_past_std),
+        float(min_past_std_floor_multiplier) * float(past_std_floor),
+    )
+    base_valid_mask_all = (future_std_all > min_future_std) & (past_std_all > effective_min_past_std)
+    ratio_ceiling_by_dim = _compute_adaptive_std_ratio_ceiling(
+        future_std=future_std_all,
+        past_std=past_std_all,
+        base_valid_mask=base_valid_mask_all,
+        iqr_multiplier=future_to_past_std_ratio_iqr_multiplier,
+        eps=eps,
+        min_valid_windows=min_ratio_filter_windows,
+    )
+    std_ratio_all = future_std_all / np.maximum(past_std_all, eps)
+    valid_mask_all = base_valid_mask_all & (std_ratio_all <= ratio_ceiling_by_dim[None, :])
     if feature_dim is None:
         feature_dim = _select_feature_dim(
             drift_scores_all,
@@ -448,6 +522,9 @@ def plot_decoupling_case_study(
         min_high_drift_windows=min_high_drift_windows,
         min_future_std=min_future_std,
         min_past_std=min_past_std,
+        past_std_floor=past_std_floor,
+        min_past_std_floor_multiplier=min_past_std_floor_multiplier,
+        max_future_to_past_std_ratio=float(ratio_ceiling_by_dim[feature_dim]),
         min_index_gap=min_index_gap,
         eps=eps,
     )
@@ -494,7 +571,7 @@ def plot_decoupling_case_study(
 
     def _make_axis() -> tuple[plt.Figure, plt.Axes]:
         fig, ax = plt.subplots(figsize=(5.2, 4.5), dpi=400, constrained_layout=True)
-        ax.set_xlabel("Forecast horizon step")
+        ax.set_xlabel("Forecast window step")
         ax.grid(True, linestyle="--", alpha=0.22)
         return fig, ax
 
@@ -520,7 +597,7 @@ def plot_decoupling_case_study(
         upper = mu_series + sigma_series
         ax_macro.fill_between(horizon_axis, lower, upper, color=color, alpha=0.16, linewidth=0.0)
         ax_macro.plot(horizon_axis, mu_series, color=color, linewidth=2.2, alpha=0.98, label=label)
-    ax_macro.set_ylabel(y_label_left)
+    ax_macro.set_ylabel("Predicted statistics")
     ax_macro.set_ylim(macro_limits[0] - macro_padding, macro_limits[1] + macro_padding)
     macro_legend = ax_macro.legend(
         loc="lower center",
@@ -570,6 +647,11 @@ def plot_decoupling_case_study(
         "experiment_subdir": experiment_subdir,
         "min_future_std": float(min_future_std),
         "min_past_std": float(min_past_std),
+        "past_std_floor": float(past_std_floor),
+        "effective_min_past_std": float(effective_min_past_std),
+        "min_past_std_floor_multiplier": float(min_past_std_floor_multiplier),
+        "future_to_past_std_ratio_iqr_multiplier": float(future_to_past_std_ratio_iqr_multiplier),
+        "max_future_to_past_std_ratio": float(ratio_ceiling_by_dim[feature_dim]),
         "effective_min_index_gap": int(selection.effective_min_index_gap),
         "output_paths": output_paths,
     }
@@ -665,6 +747,30 @@ def main() -> None:
         help="Filter out windows whose past-window scale statistic is at or below this threshold.",
     )
     parser.add_argument(
+        "--min_past_std_floor_multiplier",
+        type=float,
+        default=5.0,
+        help=(
+            "Also filter windows whose past std is near the detected RevIN-style floor. "
+            "Effective threshold is max(min_past_std, multiplier * detected_floor)."
+        ),
+    )
+    parser.add_argument(
+        "--future_to_past_std_ratio_iqr_multiplier",
+        type=float,
+        default=1.5,
+        help=(
+            "Adaptive upper-fence multiplier in log future/past std ratio space. "
+            "Smaller values remove more variance-expansion outliers."
+        ),
+    )
+    parser.add_argument(
+        "--min_ratio_filter_windows",
+        type=int,
+        default=64,
+        help="Minimum valid windows needed for fitting the adaptive std-ratio outlier filter.",
+    )
+    parser.add_argument(
         "--min_index_gap",
         type=int,
         default=None,
@@ -694,6 +800,9 @@ def main() -> None:
         experiment_subdir=args.experiment_subdir,
         min_future_std=args.min_future_std,
         min_past_std=args.min_past_std,
+        min_past_std_floor_multiplier=args.min_past_std_floor_multiplier,
+        future_to_past_std_ratio_iqr_multiplier=args.future_to_past_std_ratio_iqr_multiplier,
+        min_ratio_filter_windows=args.min_ratio_filter_windows,
         min_index_gap=args.min_index_gap,
         eps=args.eps,
     )

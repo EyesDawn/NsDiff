@@ -143,7 +143,7 @@ class iReflow(nn.Module):
         if self.itransformer.use_norm:
             scale = stdev[:, 0, :].unsqueeze(1).expand(-1, self.pred_len, -1)
             sigma = sigma * scale
-            min_sigma = torch.full_like(sigma, 1e-3)
+            min_sigma = torch.full_like(sigma, 0.1)
             sigma = torch.clamp(sigma, min=min_sigma, max=2.0 * scale)
         else:
             sigma = torch.clamp(sigma, min=0.1)

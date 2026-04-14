@@ -282,6 +282,7 @@ def plot_overall(
     output_path: str,
     clip_range: Optional[Tuple[float, float]],
     bins: int,
+    add_normal_ref: bool = True,
     show_stats: bool = True,
     kde_max_points: Optional[int] = None,
     rng: Optional[np.random.Generator] = None,
@@ -295,7 +296,8 @@ def plot_overall(
         output_path: 输出图片路径。
         clip_range : 截断区间，None 表示不截断。
         bins       : 直方图分桶数。
-        show_stats : 是否在图内标注统计量。
+        add_normal_ref: 是否叠加标准正态参考曲线。
+        show_stats    : 是否在图内标注统计量。
     """
     plt.close("all")
     fig, ax = plt.subplots(figsize=(9, 5), dpi=600)
@@ -308,7 +310,7 @@ def plot_overall(
         bins=bins,
         label_before="Y  (before PDN)",
         label_after=r"$Z_{\rm PDN}$  (after PDN)",
-        add_normal_ref=True,
+        add_normal_ref=add_normal_ref,
         title=f"Overall Density: Y vs $Z_{{\\rm PDN}}$  [N={Y.shape[0]}, P={Y.shape[1]}, D={Y.shape[2]}]",
         show_stats=show_stats,
         kde_max_points=kde_max_points,
@@ -333,6 +335,7 @@ def plot_window(
     window_start: int = 0,
     window_size: int = 12,
     segment_size: int = 4,
+    add_normal_ref: bool = True,
     show_stats: bool = True,
     kde_max_points: Optional[int] = None,
     rng: Optional[np.random.Generator] = None,
@@ -352,6 +355,7 @@ def plot_window(
         window_start  : 12 个连续样本在 N 轴的起始索引。
         window_size   : 连续样本总数（默认 12）。
         segment_size  : 每段样本数（默认 4），n_segments = window_size // segment_size。
+        add_normal_ref: 是否叠加标准正态参考曲线。
         show_stats    : 是否在每个子图内标注统计量。
     """
     N, P, D = Y.shape
@@ -391,7 +395,7 @@ def plot_window(
                 bins=bins,
                 label_before="Y",
                 label_after=r"$Z_{\rm PDN}$",
-                add_normal_ref=True,
+                add_normal_ref=add_normal_ref,
                 title=f"dim={d}  seg{s + 1} [N={si}:{ei}]",
                 show_stats=show_stats,
                 kde_max_points=kde_max_points,
@@ -424,6 +428,7 @@ def plot_window_separate(
     window_start: Optional[List[int]] = None,
     window_size: int = 12,
     segment_size: int = 4,
+    add_normal_ref: bool = False,
     show_stats: bool = True,
     kde_max_points: Optional[int] = None,
     rng: Optional[np.random.Generator] = None,
@@ -450,6 +455,7 @@ def plot_window_separate(
         window_start    : N 轴起始索引列表，每个 start 都会作为独立窗口拼到同一张图里。
         window_size     : 连续样本总数（默认 12）。
         segment_size    : 每段样本数（默认 4）。
+        add_normal_ref  : 是否叠加标准正态参考曲线。
         show_stats      : 是否在每个子图内标注统计量。
     """
     N, P, D = Y.shape
@@ -500,7 +506,7 @@ def plot_window_separate(
                         bins=bins,
                         color=color,
                         label=var_label,
-                        add_normal_ref=False,
+                        add_normal_ref=add_normal_ref,
                         title=f"w={ws} dim={d} seg{s + 1} [N={si}:{ei}]",
                         show_stats=show_stats,
                         kde_max_points=kde_max_points,
@@ -564,6 +570,7 @@ def plot_per_feature(
     bins: int,
     feature_dims: Optional[List[int]],
     n_cols: int,
+    add_normal_ref: bool = True,
     show_stats: bool = True,
     kde_max_points: Optional[int] = None,
     rng: Optional[np.random.Generator] = None,
@@ -579,7 +586,8 @@ def plot_per_feature(
         bins         : 直方图分桶数。
         feature_dims : 要展示的特征维度索引列表；None 则自动选取最多 12 个均匀分布的维度。
         n_cols       : grid 列数。
-        show_stats   : 是否在每个子图内标注统计量。
+        add_normal_ref: 是否叠加标准正态参考曲线。
+        show_stats    : 是否在每个子图内标注统计量。
     """
     D = Y.shape[2]
     dims = _resolve_feature_dims(feature_dims, D)
@@ -600,7 +608,7 @@ def plot_per_feature(
             bins=bins,
             label_before="Y",
             label_after=r"$Z_{\rm PDN}$",
-            add_normal_ref=True,
+            add_normal_ref=add_normal_ref,
             title=f"Feature dim = {d}",
             show_stats=show_stats,
             kde_max_points=kde_max_points,
@@ -625,6 +633,7 @@ def plot_per_feature_separate(
     bins: int,
     feature_dims: Optional[List[int]],
     n_cols: int,
+    add_normal_ref: bool = True,
     show_stats: bool = True,
     kde_max_points: Optional[int] = None,
     rng: Optional[np.random.Generator] = None,
@@ -645,6 +654,7 @@ def plot_per_feature_separate(
         bins            : 直方图分桶数。
         feature_dims    : 要展示的特征维度索引列表；None 则自动选取最多 12 个均匀分布的维度。
         n_cols          : grid 列数。
+        add_normal_ref  : 是否叠加标准正态参考曲线。
         show_stats      : 是否在每个子图内标注统计量。
     """
     D = Y.shape[2]
@@ -673,7 +683,7 @@ def plot_per_feature_separate(
                 bins=bins,
                 color=color,
                 label=var_label,
-                add_normal_ref=True,
+                add_normal_ref=add_normal_ref,
                 title=f"Feature dim = {d}",
                 show_stats=show_stats,
                 kde_max_points=kde_max_points,
@@ -879,10 +889,16 @@ def main() -> None:
         action="store_true",
         help="Suppress the in-figure statistics annotation (mean ± std).",
     )
+    parser.add_argument(
+        "--no_normal_ref",
+        action="store_true",
+        help="Do not draw the standard normal reference curve.",
+    )
 
     args = parser.parse_args()
 
     show_stats: bool = not args.no_stats
+    add_normal_ref: bool = not args.no_normal_ref
     rng = np.random.default_rng(args.seed)
 
     # ---- 加载数据 ----
@@ -942,6 +958,7 @@ def main() -> None:
                 window_start=args.window_start,
                 window_size=args.window_size,
                 segment_size=args.window_segment_size,
+                add_normal_ref=add_normal_ref,
                 show_stats=show_stats,
                 kde_max_points=args.kde_max_points,
                 rng=rng,
@@ -962,6 +979,7 @@ def main() -> None:
                     window_start=ws,
                     window_size=args.window_size,
                     segment_size=args.window_segment_size,
+                    add_normal_ref=add_normal_ref,
                     show_stats=show_stats,
                     kde_max_points=args.kde_max_points,
                     rng=rng,
@@ -987,6 +1005,7 @@ def main() -> None:
                 bins=args.bins,
                 feature_dims=args.feature_dims,
                 n_cols=args.n_cols,
+                add_normal_ref=add_normal_ref,
                 show_stats=show_stats,
                 kde_max_points=args.kde_max_points,
                 rng=rng,
@@ -1003,6 +1022,7 @@ def main() -> None:
                 bins=args.bins,
                 feature_dims=args.feature_dims,
                 n_cols=args.n_cols,
+                add_normal_ref=add_normal_ref,
                 show_stats=show_stats,
                 kde_max_points=args.kde_max_points,
                 rng=rng,
@@ -1013,4 +1033,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

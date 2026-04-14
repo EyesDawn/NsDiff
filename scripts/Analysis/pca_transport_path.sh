@@ -4,14 +4,14 @@ set -euo pipefail
 export PYTHONPATH=./
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 
-NPZ_PATH="${NPZ_PATH:-./results/analysis/ETTm1/ETTm1_decoupling_case_study_data.npz}"
-OUTPUT_PATH="${OUTPUT_PATH:-./results/analysis/ETTm1/ETTm1_pca_transport_path.pdf}"
-METADATA_PATH="${METADATA_PATH:-./results/analysis/ETTm1/ETTm1_pca_transport_path.json}"
+NPZ_PATH="${NPZ_PATH:-./results/analysis/ETTm1/ETTm1_decoupling_case_study_data_seed_2029.npz}"
+OUTPUT_PATH="${OUTPUT_PATH:-./results/analysis/ETTm1/ETTm1_pca_transport_path_seed_2029.pdf}"
+METADATA_PATH="${METADATA_PATH:-./results/analysis/ETTm1/ETTm1_pca_transport_path_seed_2029.json}"
 DATASET_NAME="${DATASET_NAME:-ETTm1}"
 NUM_WINDOWS="${NUM_WINDOWS:-256}"
 HIGH_DRIFT_RATIO="${HIGH_DRIFT_RATIO:-0.2}"
 MIN_HIGH_DRIFT_WINDOWS="${MIN_HIGH_DRIFT_WINDOWS:-64}"
-SEED="${SEED:-2022}"
+SEED="${SEED:-2029}"
 PCA_COMPONENTS="${PCA_COMPONENTS:-8}"
 SAMPLE_BATCH_SIZE="${SAMPLE_BATCH_SIZE:-64}"
 

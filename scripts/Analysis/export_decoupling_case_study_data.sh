@@ -37,8 +37,8 @@ NUM_SAMPLES=100
 
 DEVICE="cuda:0"
 CHECKPOINTS="./results/runs/iTransformer/"
-SEED=2022
-SAVE_PATH="./results/analysis/ETTm1/ETTm1_decoupling_case_study_data.npz"
+SEED=2029
+SAVE_PATH="./results/analysis/ETTm1/ETTm1_decoupling_case_study_data_seed_2029.npz"
 
 python3 -u ./src/experiments/pretrain_uncertainty_estimator.py \
     --is_training 0 \

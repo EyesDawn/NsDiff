@@ -50,7 +50,7 @@ GPU_ID=0
 export CUDA_VISIBLE_DEVICES=${GPU_ID}
 DEVICE="cuda:0"
 
-SEEDS='[2022, 2023]'
+SEEDS='[2028, 2029]'
 CHECKPOINTS="./results/runs/iTransformer/"
 ITR=1
 

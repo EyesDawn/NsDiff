@@ -107,6 +107,7 @@ class iReflowExp(ProbForecastExp):
     temperature: float = 1.0  # 采样温度
     num_samples: int = 100  # 测试时生成的样本数
     val_num_samples: int = 100  # 验证时用于估计 CRPS 的样本数
+    eval_micro_batch_size: int = 8  # 评估时将 dataloader batch 再切小，避免大样本预测导致 OOM
     x0_dist: str = 'pred_gaussian'  # X_0 分布: pred_gaussian | standard_normal
     
     # 损失函数
@@ -372,6 +373,31 @@ class iReflowExp(ProbForecastExp):
         
         return preds, truths
 
+    def _iter_eval_micro_batches(
+        self,
+        batch_x,
+        batch_y,
+        origin_y,
+        batch_x_date_enc,
+        batch_y_date_enc,
+    ):
+        """按微批次切分评估 batch，限制采样与指标计算的峰值内存。"""
+        batch_size = batch_x.shape[0]
+        micro_batch_size = int(getattr(self, "eval_micro_batch_size", batch_size))
+        micro_batch_size = max(1, min(micro_batch_size, batch_size))
+
+        for start in range(0, batch_size, micro_batch_size):
+            end = min(start + micro_batch_size, batch_size)
+            yield (
+                start,
+                end,
+                batch_x[start:end],
+                batch_y[start:end],
+                origin_y[start:end],
+                batch_x_date_enc[start:end],
+                batch_y_date_enc[start:end],
+            )
+
     def _evaluate(self, dataloader, plot=False):
         """
         重写评估逻辑：
@@ -408,71 +434,85 @@ class iReflowExp(ProbForecastExp):
         with tqdm(total=len(dataloader.dataset)) as progress_bar:
             with torch.no_grad():
                 for i, (batch_x, batch_y, origin_x, origin_y, batch_x_date_enc, batch_y_date_enc) in enumerate(dataloader):
-                    batch_x = batch_x.to(self.device).float()
-                    batch_y = batch_y.to(self.device).float()
-                    origin_y = origin_y.to(self.device).float()
-                    batch_x_date_enc = batch_x_date_enc.to(self.device).float()
+                    for start, end, mb_x, mb_y, mb_origin_y, mb_x_date_enc, mb_y_date_enc in self._iter_eval_micro_batches(
+                        batch_x,
+                        batch_y,
+                        origin_y,
+                        batch_x_date_enc,
+                        batch_y_date_enc,
+                    ):
+                        mb_x = mb_x.to(self.device).float()
+                        mb_y = mb_y.to(self.device).float()
+                        mb_origin_y = mb_origin_y.to(self.device).float()
+                        mb_x_date_enc = mb_x_date_enc.to(self.device).float()
 
-                    # 生成采样预测 + 点预测与 sigma
-                    samples, y_hat, sigma, z_samples, x_samples = self.model.forecast(
-                        x_enc=batch_x,
-                        x_mark_enc=batch_x_date_enc,
-                        num_samples=num_samples,
-                        temperature=self.temperature,
-                    )  # samples: [B, S, P, D], y_hat/sigma: [B, P, D]
+                        # 生成采样预测 + 点预测与 sigma
+                        samples, y_hat, sigma, z_samples, x_samples = self.model.forecast(
+                            x_enc=mb_x,
+                            x_mark_enc=mb_x_date_enc,
+                            num_samples=num_samples,
+                            temperature=self.temperature,
+                            return_trajs=plot,
+                        )  # samples: [B, S, P, D], y_hat/sigma: [B, P, D]
 
-                    # 采样型概率指标：转换为 [B, P, D, S]
-                    preds = samples.permute(0, 2, 3, 1).contiguous()
-                    truths = batch_y
-                    if self.invtrans_loss:
-                        # 采样指标仍按父类逻辑：反归一化后与 origin_y 对齐
-                        preds = self.scaler.inverse_transform(preds)
-                        truths = origin_y
+                        # 采样型概率指标：转换为 [B, P, D, S]
+                        preds = samples.permute(0, 2, 3, 1).contiguous()
+                        truths = mb_y
+                        if self.invtrans_loss:
+                            # 采样指标仍按父类逻辑：反归一化后与 origin_y 对齐
+                            preds = self.scaler.inverse_transform(preds)
+                            truths = mb_origin_y
 
-                    self.metrics.update(
-                        preds.contiguous().cpu().detach(),
-                        truths.contiguous().cpu().detach(),
-                    )
+                        self.metrics.update(
+                            preds.contiguous().cpu().detach(),
+                            truths.contiguous().cpu().detach(),
+                        )
 
-                    # sigma 指标：在 batch_y/y_hat/sigma 的同一尺度上计算（不 inverse_transform）
-                    sigma_metrics = compute_sigma_metrics(
-                        y=batch_y.detach().cpu(),
-                        mu=y_hat.detach().cpu(),
-                        sigma=sigma.detach().cpu(),
-                        interval_levels=list(interval_levels),
-                        pit_bins=pit_bins,
-                    )
-                    # 只保留关键指标，避免日志/面板过于拥挤
-                    for k, v in sigma_metrics.items():
-                        if sigma_metric_keys is not None and k not in sigma_metric_keys:
-                            continue
-                        sigma_sums[k] = sigma_sums.get(k, 0.0) + float(v)
-                    sigma_counts += 1
+                        # sigma 指标：在 batch_y/y_hat/sigma 的同一尺度上计算（不 inverse_transform）
+                        sigma_metrics = compute_sigma_metrics(
+                            y=mb_y.detach().cpu(),
+                            mu=y_hat.detach().cpu(),
+                            sigma=sigma.detach().cpu(),
+                            interval_levels=list(interval_levels),
+                            pit_bins=pit_bins,
+                        )
+                        # 只保留关键指标，避免日志/面板过于拥挤
+                        for k, v in sigma_metrics.items():
+                            if sigma_metric_keys is not None and k not in sigma_metric_keys:
+                                continue
+                            sigma_sums[k] = sigma_sums.get(k, 0.0) + float(v)
+                        sigma_counts += 1
 
-                    if plot:
-                        voutput = preds.permute(0,3,1,2).detach().cpu().numpy()
-                        true = truths.detach().cpu().numpy()
-                        vx = batch_x.detach().cpu().numpy()[0, :, -1]
+                        if plot:
+                            voutput = preds.permute(0, 3, 1, 2).detach().cpu().numpy()
+                            true = truths.detach().cpu().numpy()
+                            vx = mb_x.detach().cpu().numpy()[0, :, -1]
 
-                        vtrue = np.concatenate((vx, true[0, :, -1]))
-                        data = voutput[0,:,:,-1]
-                        prob_visual(data, vtrue, name=os.path.join(os.path.join('./plot_results', self.dataset_type), str(i) + '.pdf'))
+                            vtrue = np.concatenate((vx, true[0, :, -1]))
+                            data = voutput[0, :, :, -1]
+                            plot_name = f"{i}_{start}.pdf"
+                            prob_visual(
+                                data,
+                                vtrue,
+                                name=os.path.join(os.path.join('./plot_results', self.dataset_type), plot_name),
+                            )
 
-                        # sigma = sigma.detach().cpu().numpy()
-                        # vsigma = sigma[0,:,-1]
-                        # std_visual(vx, true[0, :, -1], vsigma, name=os.path.join(os.path.join('./plot_results', self.dataset_type), str(i) + '_std' + '.pdf'))
+                            if z_samples is not None and x_samples is not None:
+                                max_plot_steps = min(5, z_samples.shape[0])
+                                for j in range(max_plot_steps):
+                                    z = z_samples[j, 0, :, :, -1].detach().cpu().numpy()
+                                    x = x_samples[j, 0, :, :, -1].detach().cpu().numpy()
+                                    zx_visual(
+                                        z,
+                                        x,
+                                        name=os.path.join(
+                                            os.path.join('./plot_results', self.dataset_type),
+                                            f"{i}_{start}_std{j}.pdf",
+                                        ),
+                                    )
 
-                        # z = z_samples[0,:,:,-1].detach().cpu().numpy()
-                        # x = x_samples[0,:,:,-1].detach().cpu().numpy()
-                        # zx_visual(z,x, name=os.path.join(os.path.join('./plot_results', self.dataset_type), str(i) + '_std' + '.pdf'))
-
-                        max_plot_steps = min(5, z_samples.shape[0])
-                        for j in range(max_plot_steps):
-                            z = z_samples[j,0,:,:,-1].detach().cpu().numpy()
-                            x = x_samples[j,0,:,:,-1].detach().cpu().numpy()
-                            zx_visual(z,x, name=os.path.join(os.path.join('./plot_results', self.dataset_type), str(i) + '_std' + str(j) + '.pdf'))
-
-                    progress_bar.update(batch_x.shape[0])
+                        del samples, y_hat, sigma, preds, truths
+                        progress_bar.update(end - start)
 
         result = {name: float(metric.compute()) for name, metric in self.metrics.items()}
         if sigma_counts > 0:
@@ -520,6 +560,7 @@ class iReflowExp(ProbForecastExp):
         'is_training',   # 训练/测试模式切换，is_training=0 需要能找到 is_training=1 训练出的模型
         'wandb_project', # 日志项目名，不影响实验结果
         'checkpoint_mode_for_test', # 仅影响测试时从哪个训练模式目录加载
+        'eval_micro_batch_size', # 评估细节，不影响模型结构
     }
 
     @property

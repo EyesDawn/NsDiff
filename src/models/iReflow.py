@@ -255,7 +255,7 @@ class iReflow(nn.Module):
         return total_loss, loss_dict
     
     @torch.no_grad()
-    def sample(self, x_enc, x_mark_enc, num_samples=1, temperature=1.0):
+    def sample(self, x_enc, x_mark_enc, num_samples=1, temperature=1.0, return_trajs=False):
         """
         采样/推理过程
         
@@ -279,8 +279,8 @@ class iReflow(nn.Module):
         
         # Stage 2: 采样初始化
         samples = []
-        x_samples = []
-        z_samples = []
+        x_samples = [] if return_trajs else None
+        z_samples = [] if return_trajs else None
         
         for _ in range(num_samples):
             # 采样随机噪声
@@ -289,16 +289,18 @@ class iReflow(nn.Module):
             # 初始状态 X_0
             X_tau = self._build_x0(y_hat, sigma, epsilon, temperature=temperature)
 
-            cur_x_traj = []
-            cur_z_traj = []
+            if return_trajs:
+                cur_x_traj = []
+                cur_z_traj = []
 
             # Stage 3: ODE求解
             if self.num_sampling_steps == 1:
                 # One-step generation (极快速)
                 tau = torch.zeros(B, device=device)
-                z_tau = (X_tau - y_hat) / sigma
-                cur_z_traj.append(z_tau)
-                cur_x_traj.append(X_tau)
+                if return_trajs:
+                    z_tau = (X_tau - y_hat) / sigma
+                    cur_z_traj.append(z_tau)
+                    cur_x_traj.append(X_tau)
                 v = self.velocity_net(X_tau, tau, enc_features, y_hat, sigma)
                 X_pred = X_tau + v
             else:
@@ -310,9 +312,10 @@ class iReflow(nn.Module):
                     tau = torch.ones(B, device=device) * tau_val
                     v = self.velocity_net(X_tau, tau, enc_features, y_hat, sigma)
 
-                    z_tau = (X_tau - y_hat) / sigma
-                    cur_z_traj.append(z_tau)
-                    cur_x_traj.append(X_tau)
+                    if return_trajs:
+                        z_tau = (X_tau - y_hat) / sigma
+                        cur_z_traj.append(z_tau)
+                        cur_x_traj.append(X_tau)
 
                     # Euler step
                     X_tau = X_tau + v * dt
@@ -320,16 +323,18 @@ class iReflow(nn.Module):
             
             samples.append(X_pred)
 
-            cur_z_traj = torch.stack(cur_z_traj, dim=0) # [num_sampling_steps, B, P, D]
-            cur_x_traj = torch.stack(cur_x_traj, dim=0) # [num_sampling_steps, B, P, D]
-            z_samples.append(cur_z_traj)
-            x_samples.append(cur_x_traj)
+            if return_trajs:
+                cur_z_traj = torch.stack(cur_z_traj, dim=0) # [num_sampling_steps, B, P, D]
+                cur_x_traj = torch.stack(cur_x_traj, dim=0) # [num_sampling_steps, B, P, D]
+                z_samples.append(cur_z_traj)
+                x_samples.append(cur_x_traj)
         
         # [num_samples, B, P, D] -> [B, num_samples, P, D]
         samples = torch.stack(samples, dim=1)
 
-        z_samples = torch.stack(z_samples, dim=2) # [num_sampling_steps, B, num_samples, P, D]
-        x_samples = torch.stack(x_samples, dim=2) # [num_sampling_steps, B, num_samples, P, D]
+        if return_trajs:
+            z_samples = torch.stack(z_samples, dim=2) # [num_sampling_steps, B, num_samples, P, D]
+            x_samples = torch.stack(x_samples, dim=2) # [num_sampling_steps, B, num_samples, P, D]
         
         return samples, y_hat, sigma, z_samples, x_samples
     
@@ -355,10 +360,10 @@ class iReflow(nn.Module):
             return loss, loss_dict, y_hat
         else:
             # 采样模式
-            samples, y_hat, sigma = self.sample(x_enc, x_mark_enc, num_samples=1)
+            samples, y_hat, sigma, _, _ = self.sample(x_enc, x_mark_enc, num_samples=1)
             return samples[:, 0, :, :], y_hat, sigma  # 返回第一个样本
     
-    def forecast(self, x_enc, x_mark_enc, num_samples=100, temperature=1.0):
+    def forecast(self, x_enc, x_mark_enc, num_samples=100, temperature=1.0, return_trajs=False):
         """
         概率预测接口
         
@@ -372,4 +377,4 @@ class iReflow(nn.Module):
             y_hat: [B, P, D] 点预测
             sigma: [B, P, D] 不确定性
         """
-        return self.sample(x_enc, x_mark_enc, num_samples, temperature)
+        return self.sample(x_enc, x_mark_enc, num_samples, temperature, return_trajs=return_trajs)

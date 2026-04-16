@@ -8,14 +8,15 @@ and produces three publication-ready single-panel figures:
 
 1. Raw-space OT path bundle in an independent 2D PCA view.
 2. PDN-space OT path bundle in an independent 2D PCA view.
-3. Dispersion along flow time for the same windows and the same sampled priors.
+3. Endpoint-distance bars along flow time for the same windows and sampled priors.
 
 Design follows `docs/Analytical_experiments.md`:
   - rank test windows by a deterministic drift score;
   - retain the high-drift subset and sample a fixed number of windows;
   - trim extreme PDN-endpoint outliers that are dominated by near-zero scales;
   - construct the same OT interpolation path in raw and PDN spaces;
-  - fit PCA independently per space for visualization.
+  - fit PCA independently per space for visualization;
+  - summarize how fast the transport path approaches its terminal state in raw/PDN space.
 """
 
 from __future__ import annotations
@@ -33,6 +34,12 @@ import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.decomposition import IncrementalPCA
+from matplotlib.patches import Patch
+
+try:
+    from src.analysis.residual_wasserstein import _wasserstein_empirical
+except ModuleNotFoundError:
+    from residual_wasserstein import _wasserstein_empirical
 
 try:
     import seaborn as sns
@@ -305,18 +312,20 @@ def _transform_states(
     return transformed.reshape(num_tau, num_windows, -1).transpose(1, 0, 2)
 
 
-def _pairwise_mean_distance(x: np.ndarray) -> float:
-    x = np.asarray(x, dtype=np.float32)
-    gram = x @ x.T
-    sq_norm = np.sum(x * x, axis=1, keepdims=True)
-    dist_sq = np.maximum(sq_norm + sq_norm.T - 2.0 * gram, 0.0)
-    upper = np.triu_indices(dist_sq.shape[0], k=1)
-    if upper[0].size == 0:
-        return 0.0
-    return float(np.mean(np.sqrt(dist_sq[upper], dtype=np.float32)))
+def _mean_per_window_wasserstein_to_endpoint(
+    state: np.ndarray,
+    endpoint: np.ndarray,
+) -> float:
+    state_flat = np.asarray(state, dtype=np.float64).reshape(state.shape[0], -1)
+    endpoint_flat = np.asarray(endpoint, dtype=np.float64).reshape(endpoint.shape[0], -1)
+    distances = [
+        _wasserstein_empirical(state_i, endpoint_i)
+        for state_i, endpoint_i in zip(state_flat, endpoint_flat)
+    ]
+    return float(np.mean(distances, dtype=np.float64))
 
 
-def _compute_dispersion_curves(
+def _compute_endpoint_distance_curves(
     y: np.ndarray,
     mu_hat: np.ndarray,
     sigma_hat: np.ndarray,
@@ -331,8 +340,8 @@ def _compute_dispersion_curves(
         one_minus_tau = np.float32(1.0 - tau)
         raw_state = tau_f * y + one_minus_tau * (mu_hat + sigma_hat * noise)
         pdn_state = tau_f * z_target + one_minus_tau * noise
-        raw_curve.append(_pairwise_mean_distance(raw_state.reshape(raw_state.shape[0], -1)))
-        pdn_curve.append(_pairwise_mean_distance(pdn_state.reshape(pdn_state.shape[0], -1)))
+        raw_curve.append(_mean_per_window_wasserstein_to_endpoint(raw_state, y))
+        pdn_curve.append(_mean_per_window_wasserstein_to_endpoint(pdn_state, z_target))
     return {"raw": raw_curve, "pdn": pdn_curve}
 
 
@@ -438,39 +447,105 @@ def _plot_path_bundle(
     plt.close(fig)
 
 
-def _plot_dispersion(
+def _plot_endpoint_distance_bars(
     tau_values: np.ndarray,
-    dispersion: dict[str, list[float]],
+    endpoint_distance: dict[str, list[float]],
+    dataset_name: str,
     output_path: str,
 ) -> None:
-    fig, ax = plt.subplots(figsize=(5.0, 4.3), dpi=400, constrained_layout=True)
-    if sns is not None:
-        raw_color, pdn_color = sns.color_palette("deep", n_colors=2)
-    else:
-        raw_color, pdn_color = "#C44E52", "#4C72B0"
+    tau_values = np.asarray(tau_values, dtype=np.float64)
+    raw_values = np.asarray(endpoint_distance["raw"], dtype=np.float64)
+    pdn_values = np.asarray(endpoint_distance["pdn"], dtype=np.float64)
+    plot_mask = tau_values < (1.0 - 1e-8)
+    if not np.any(plot_mask):
+        plot_mask = np.ones_like(tau_values, dtype=bool)
 
-    ax.plot(
-        tau_values,
-        dispersion["raw"],
+    tau_plot = tau_values[plot_mask]
+    raw_plot = raw_values[plot_mask]
+    pdn_plot = pdn_values[plot_mask]
+
+    fig, ax = plt.subplots(figsize=(5.6, 4.4), dpi=400, constrained_layout=True)
+    if sns is not None:
+        raw_color, pdn_color = sns.color_palette(["#D98989", "#5B84C4"])
+    else:
+        raw_color, pdn_color = "#D98989", "#5B84C4"
+
+    x = np.arange(tau_plot.shape[0], dtype=np.float64)
+    width = 0.26
+    raw_bars = ax.bar(
+        x - width / 2.0,
+        raw_plot,
+        width=width,
         color=raw_color,
-        linewidth=2.4,
-        marker="o",
-        markersize=5.6,
-        label="Raw space",
+        edgecolor="white",
+        linewidth=0.8,
+        hatch="xxx",
+        label="Raw Space",
+        zorder=3,
     )
-    ax.plot(
-        tau_values,
-        dispersion["pdn"],
+    pdn_bars = ax.bar(
+        x + width / 2.0,
+        pdn_plot,
+        width=width,
         color=pdn_color,
-        linewidth=2.4,
-        marker="o",
-        markersize=5.6,
-        label="PDN space",
+        edgecolor="white",
+        linewidth=0.8,
+        hatch="////",
+        label="PDN Space",
+        zorder=3,
     )
+
+    ax.set_title(dataset_name, fontsize=14, fontweight="semibold", pad=7)
     ax.set_xlabel("Flow time $\\tau$")
-    ax.set_ylabel("Average pairwise distance")
-    ax.legend(loc="best", frameon=True, framealpha=0.94)
-    ax.grid(True, linestyle="--", alpha=0.20)
+    ax.set_ylabel("Mean Wasserstein-1 Distance to $X_1$ / $Z_1$")
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"{tau:.2f}" for tau in tau_plot])
+    ax.grid(True, axis="y", linestyle="--", alpha=0.24, zorder=0)
+    ax.grid(False, axis="x")
+
+    ymax = float(max(np.max(raw_plot), np.max(pdn_plot), 1e-8))
+    ax.set_ylim(0.0, ymax * 1.42)
+    ax.margins(x=0.02)
+
+    legend_handles = [
+        Patch(facecolor=raw_color, edgecolor="white", linewidth=0.8, hatch="xxx", label="Raw Space"),
+        Patch(facecolor=pdn_color, edgecolor="white", linewidth=0.8, hatch="////", label="PDN Space"),
+    ]
+    ax.legend(handles=legend_handles, loc="upper left", frameon=True, framealpha=0.95)
+
+    annotation_base = ymax * 0.08
+    arrow_color = "#2F2F2F"
+    for idx, (raw_bar, pdn_bar, raw_val, pdn_val) in enumerate(
+        zip(raw_bars, pdn_bars, raw_plot, pdn_plot)
+    ):
+        if raw_val <= 1e-12:
+            continue
+        improvement = 100.0 * (raw_val - pdn_val) / raw_val
+        sign = "-" if improvement >= 0.0 else "+"
+        label = f"{sign}{abs(improvement):.1f}%"
+        text_x = x[idx] - width * 0.02
+        text_y = max(raw_val, pdn_val) + annotation_base * (1.15 + 0.18 * (idx % 2))
+        ax.annotate(
+            label,
+            xy=(pdn_bar.get_x() + pdn_bar.get_width() / 2.0, pdn_val),
+            xytext=(text_x, text_y),
+            ha="center",
+            va="bottom",
+            fontsize=9.2,
+            color=arrow_color,
+            arrowprops={
+                "arrowstyle": "-|>",
+                "lw": 1.15,
+                "color": arrow_color,
+                "alpha": 0.92,
+                "shrinkA": 0.0,
+                "shrinkB": 5.0,
+                "connectionstyle": "arc3,rad=-0.32",
+            },
+        )
+
+    if sns is not None:
+        sns.despine(ax=ax, left=False, bottom=False)
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     fig.savefig(output_path, bbox_inches="tight")
@@ -483,7 +558,7 @@ def _save_metadata(
     selection: WindowSelection,
     tau_values: np.ndarray,
     explained_variance_ratio: dict[str, list[float]],
-    dispersion: dict[str, list[float]],
+    endpoint_distance: dict[str, list[float]],
     pca_components: int,
     seed: int,
     drift_feature_dim: int | None,
@@ -516,11 +591,13 @@ def _save_metadata(
         "tau_values": [float(v) for v in tau_values.tolist()],
         "pca_components": int(pca_components),
         "explained_variance_ratio": explained_variance_ratio,
-        "dispersion": {
-            "raw": [float(v) for v in dispersion["raw"]],
-            "pdn": [float(v) for v in dispersion["pdn"]],
+        "endpoint_distance_metric": "mean_per_window_wasserstein_1d",
+        "endpoint_distance": {
+            "raw": [float(v) for v in endpoint_distance["raw"]],
+            "pdn": [float(v) for v in endpoint_distance["pdn"]],
         },
     }
+    payload["dispersion"] = payload["endpoint_distance"]
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
@@ -635,7 +712,7 @@ def plot_pca_transport_path(
         sample_batch_size=sample_batch_size,
     )
 
-    dispersion = _compute_dispersion_curves(
+    endpoint_distance = _compute_endpoint_distance_curves(
         y=y_sel,
         mu_hat=mu_hat_sel,
         sigma_hat=sigma_hat_sel,
@@ -659,9 +736,10 @@ def plot_pca_transport_path(
         explained_ratio=pdn_ipca.explained_variance_ratio_[:2],
         output_path=output_paths["pdn_pca"],
     )
-    _plot_dispersion(
+    _plot_endpoint_distance_bars(
         tau_values=tau_arr,
-        dispersion=dispersion,
+        endpoint_distance=endpoint_distance,
+        dataset_name=dataset_name,
         output_path=output_paths["dispersion"],
     )
 
@@ -676,13 +754,13 @@ def plot_pca_transport_path(
             selection=selection,
             tau_values=tau_arr,
             explained_variance_ratio=explained_variance_ratio,
-            dispersion=dispersion,
+            endpoint_distance=endpoint_distance,
             pca_components=int(raw_ipca.n_components_),
             seed=seed,
             drift_feature_dim=drift_feature_dim,
         )
 
-    return {
+    result = {
         "selected_indices": [int(v) for v in idx.tolist()],
         "candidate_count_before_outlier_filter": int(
             selection.candidate_indices_before_outlier_filter.shape[0]
@@ -700,11 +778,14 @@ def plot_pca_transport_path(
         "pca_components": int(raw_ipca.n_components_),
         "output_paths": output_paths,
         "explained_variance_ratio": explained_variance_ratio,
-        "dispersion": {
-            "raw": [float(v) for v in dispersion["raw"]],
-            "pdn": [float(v) for v in dispersion["pdn"]],
+        "endpoint_distance_metric": "mean_per_window_wasserstein_1d",
+        "endpoint_distance": {
+            "raw": [float(v) for v in endpoint_distance["raw"]],
+            "pdn": [float(v) for v in endpoint_distance["pdn"]],
         },
     }
+    result["dispersion"] = result["endpoint_distance"]
+    return result
 
 
 def main() -> None:
@@ -726,7 +807,8 @@ def main() -> None:
         required=True,
         help=(
             "Base output figure path. The script will save "
-            "`*_raw_pca.pdf`, `*_pdn_pca.pdf`, and `*_dispersion.pdf` variants."
+            "`*_raw_pca.pdf`, `*_pdn_pca.pdf`, and a grouped-bar "
+            "`*_dispersion.pdf` endpoint-distance variant."
         ),
     )
     parser.add_argument(

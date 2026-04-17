@@ -21,7 +21,11 @@ import torch.distributed as dist
 import torch
 from tqdm import tqdm
 import concurrent.futures
-import wandb
+try:
+    import wandb
+except Exception:
+    wandb = None
+    print("Warning: wandb is not available, disabling wandb integration.")
 
 
 @dataclass

@@ -2,7 +2,11 @@ from dataclasses import dataclass, field
 import sys
 from typing import List, Dict
 import os
-import wandb
+try:
+    import wandb
+except Exception:
+    wandb = None
+    print("Warning: wandb is not available, disabling wandb integration.")
 import torch
 from dataclasses import dataclass, asdict, field
 from torch_timeseries.nn.embedding import freq_map

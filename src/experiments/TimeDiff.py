@@ -15,7 +15,11 @@ from torch_timeseries.utils.reproduce import reproducible
 import time
 # import multiprocessing
 import torch.multiprocessing as mp
-import wandb
+try:
+    import wandb
+except Exception:
+    wandb = None
+    print("Warning: wandb is not available, disabling wandb integration.")
 import numpy as np
 import torch.distributed as dist
 import torch

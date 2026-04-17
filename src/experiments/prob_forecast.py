@@ -6,7 +6,7 @@ import json
 import os
 import random
 import time
-from typing import Dict, List, Type, Union
+from typing import Dict, List, Optional, Tuple, Type, Union
 
 import numpy as np
 import pandas as pd
@@ -186,6 +186,210 @@ class ProbForecastExp(ForecastExp):
 
         result = {name: float(metric.compute()) for name, metric in self.metrics.items()}
         return result
+
+    def _get_scaler_mean_std(
+        self,
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """Return dataset-level scaler statistics as broadcastable tensors."""
+        if not hasattr(self, "scaler"):
+            return None, None
+
+        mean = None
+        std = None
+        if hasattr(self.scaler, "mean"):
+            mean = getattr(self.scaler, "mean")
+        elif hasattr(self.scaler, "mean_"):
+            mean = getattr(self.scaler, "mean_")
+
+        if hasattr(self.scaler, "std"):
+            std = getattr(self.scaler, "std")
+        elif hasattr(self.scaler, "std_"):
+            std = getattr(self.scaler, "std_")
+        elif hasattr(self.scaler, "scale_"):
+            std = getattr(self.scaler, "scale_")
+
+        if mean is None or std is None:
+            return None, None
+
+        mean_tensor = torch.as_tensor(mean, device=device, dtype=dtype).view(1, 1, -1)
+        std_tensor = torch.as_tensor(std, device=device, dtype=dtype).view(1, 1, -1)
+        return mean_tensor, std_tensor
+
+    def _inverse_transform_last_dim(self, tensor: torch.Tensor) -> torch.Tensor:
+        """
+        Inverse-transform any tensor whose feature dimension is the penultimate axis.
+
+        Supported shapes include [B, P, D] and [B, P, D, S].
+        """
+        if not hasattr(self, "scaler"):
+            return tensor
+        if tensor.ndim < 3:
+            return self.scaler.inverse_transform(tensor)
+
+        mean, std = self._get_scaler_mean_std(dtype=tensor.dtype, device=tensor.device)
+        if mean is None or std is None:
+            return self.scaler.inverse_transform(tensor)
+
+        view_shape = [1] * tensor.ndim
+        feature_axis = tensor.ndim - 2
+        view_shape[feature_axis] = mean.shape[-1]
+        mean = mean.view(*view_shape)
+        std = std.view(*view_shape)
+        return tensor * std + mean
+
+    @torch.no_grad()
+    def export_forecast_samples_on_test(
+        self,
+        seed: int = 42,
+        save_path: str = "./results/analysis/forecast_samples_on_test.npz",
+        use_origin_scale: bool = True,
+        eps: float = 1e-6,
+        max_windows: Optional[int] = None,
+        run_dir_override: Optional[str] = None,
+        return_result: bool = False,
+    ) -> Optional[Dict[str, np.ndarray]]:
+        """
+        Export aligned forecast samples on the full test set.
+
+        Saved tensors:
+          - Y: realized future windows, shape [N, P, D]
+          - samples: predictive samples, shape [N, P, D, S]
+          - mu_X / sigma_X: history-window mean/std, shape [N, 1, D]
+
+        The output is designed for downstream cross-method analysis scripts that
+        need a shared window pool and comparable probabilistic forecasts.
+        """
+        if hasattr(self, "_get_setting"):
+            setting = self._get_setting(seed)
+        else:
+            setting = "N/A"
+
+        print("=" * 80)
+        print("Analysis Export: Forecast Samples on Test Set")
+        print(f"Dataset: {getattr(self, 'dataset_type', getattr(self, 'data', 'custom'))}")
+        print(f"Setting: {setting}")
+        print(f"Seed   : {seed}")
+        print("=" * 80)
+
+        self._setup_run(seed)
+        if run_dir_override is not None:
+            resolved_run_dir = os.path.abspath(run_dir_override)
+            self.run_save_dir = resolved_run_dir
+            self.run_checkpoint_filepath = os.path.join(
+                resolved_run_dir,
+                os.path.basename(getattr(self, "run_checkpoint_filepath", "run_checkpoint.pth")),
+            )
+            if hasattr(self, "best_checkpoint_filepath"):
+                self.best_checkpoint_filepath = os.path.join(
+                    resolved_run_dir,
+                    os.path.basename(getattr(self, "best_checkpoint_filepath", "best_model.pth")),
+                )
+            if hasattr(self, "best_cond_checkpoint_filepath"):
+                self.best_cond_checkpoint_filepath = os.path.join(
+                    resolved_run_dir,
+                    os.path.basename(getattr(self, "best_cond_checkpoint_filepath", "cond_pred_model.pth")),
+                )
+            if hasattr(self, "best_cond_g_checkpoint_filepath"):
+                self.best_cond_g_checkpoint_filepath = os.path.join(
+                    resolved_run_dir,
+                    os.path.basename(getattr(self, "best_cond_g_checkpoint_filepath", "cond_pred_model_g.pth")),
+                )
+            if hasattr(self, "_base_run_save_dir"):
+                self._base_run_save_dir = os.path.dirname(resolved_run_dir)
+        try:
+            self._init_data_loader(shuffle=False, fast_test=False, fast_val=False)
+        except TypeError:
+            self._init_data_loader()
+        self._load_best_model()
+        self.model.eval()
+
+        ys = []
+        samples_all = []
+        mu_xs = []
+        sigma_xs = []
+
+        collected = 0
+        with tqdm(total=len(self.test_loader.dataset)) as progress_bar:
+            for (
+                batch_x,
+                batch_y,
+                origin_x,
+                origin_y,
+                batch_x_date_enc,
+                batch_y_date_enc,
+            ) in self.test_loader:
+                batch_x = batch_x.to(self.device).float()
+                batch_y = batch_y.to(self.device).float()
+                origin_x = origin_x.to(self.device).float()
+                origin_y = origin_y.to(self.device).float()
+                batch_x_date_enc = batch_x_date_enc.to(self.device).float()
+                batch_y_date_enc = batch_y_date_enc.to(self.device).float()
+
+                preds, _ = self._process_val_batch(
+                    batch_x, batch_y, batch_x_date_enc, batch_y_date_enc
+                )
+                if preds.ndim != 4:
+                    raise ValueError(
+                        "Expected probabilistic predictions with shape [B, P, D, S], "
+                        f"got {tuple(preds.shape)}."
+                    )
+
+                x_ref = origin_x if use_origin_scale else batch_x
+                y_ref = origin_y if use_origin_scale else batch_y
+                if use_origin_scale:
+                    preds = self._inverse_transform_last_dim(preds)
+
+                mu_x = x_ref.mean(dim=1, keepdim=True)
+                sigma_x = x_ref.std(dim=1, keepdim=True).clamp_min(eps)
+
+                ys.append(y_ref.detach().cpu())
+                samples_all.append(preds.detach().cpu())
+                mu_xs.append(mu_x.detach().cpu())
+                sigma_xs.append(sigma_x.detach().cpu())
+
+                batch_size = batch_x.shape[0]
+                collected += batch_size
+                progress_bar.update(batch_size)
+                if max_windows is not None and collected >= max_windows:
+                    break
+
+        def _cat_to_numpy(tensor_list):
+            return torch.cat(tensor_list, dim=0).numpy() if tensor_list else None
+
+        y_all = _cat_to_numpy(ys)
+        samples_np = _cat_to_numpy(samples_all)
+        mu_x_all = _cat_to_numpy(mu_xs)
+        sigma_x_all = _cat_to_numpy(sigma_xs)
+
+        if max_windows is not None and y_all is not None:
+            limit = min(int(max_windows), y_all.shape[0])
+            y_all = y_all[:limit]
+            samples_np = samples_np[:limit]
+            mu_x_all = mu_x_all[:limit]
+            sigma_x_all = sigma_x_all[:limit]
+
+        result = {
+            "Y": y_all,
+            "samples": samples_np,
+            "mu_X": mu_x_all,
+            "sigma_X": sigma_x_all,
+        }
+
+        save_dir = os.path.dirname(save_path)
+        if save_dir:
+            os.makedirs(save_dir, exist_ok=True)
+        np.savez_compressed(save_path, **{k: v for k, v in result.items() if v is not None})
+
+        print(f"Forecast samples saved to: {save_path}")
+        print(f"Y shape        : {None if y_all is None else y_all.shape}")
+        print(f"samples shape  : {None if samples_np is None else samples_np.shape}")
+        print(f"mu_X / sigma_X : {None if mu_x_all is None else mu_x_all.shape}")
+
+        if return_result:
+            return result
+        return None
     
     
     def _init_data_loader(self, shuffle=True, fast_test=True, fast_val=True):

@@ -676,40 +676,6 @@ def _plot_endpoint_distance_bars(
         fontsize=legend_fontsize,
     )
 
-    annotation_base = ymax * 0.08
-    arrow_color = "#2F2F2F"
-    for idx, (raw_bar, pdn_bar, raw_val, pdn_val) in enumerate(
-        zip(raw_bars, pdn_bars, raw_plot, pdn_plot)
-    ):
-        if raw_val <= 1e-12:
-            continue
-        improvement = 100.0 * (raw_val - pdn_val) / raw_val
-        sign = "-" if improvement >= 0.0 else "+"
-        label = f"{sign}{abs(improvement):.1f}%"
-        text_x = x[idx] - width * 0.02
-        text_y = (
-            max(raw_val + raw_std_plot[idx], pdn_val + pdn_std_plot[idx])
-            + annotation_base * (1.15 + 0.18 * (idx % 2))
-        )
-        ax.annotate(
-            label,
-            xy=(pdn_bar.get_x() + pdn_bar.get_width() / 2.0, pdn_val),
-            xytext=(text_x, text_y),
-            ha="center",
-            va="bottom",
-            fontsize=9.5 * FONT_SCALE,
-            color=arrow_color,
-            arrowprops={
-                "arrowstyle": "-|>",
-                "lw": 1.15,
-                "color": arrow_color,
-                "alpha": 0.92,
-                "shrinkA": 0.0,
-                "shrinkB": 5.0,
-                "connectionstyle": "arc3,rad=-0.32",
-            },
-        )
-
     if sns is not None:
         sns.despine(ax=ax, left=False, bottom=False)
 

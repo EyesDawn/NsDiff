@@ -47,6 +47,13 @@ except ImportError:
     sns = None
 
 
+FONT_SCALE = 1.2
+PCA_TEXT_SIZE = 12 * FONT_SCALE
+MARKER_LINEAR_SCALE = 1.2
+MARKER_AREA_SCALE = MARKER_LINEAR_SCALE ** 2
+PATH_LINEWIDTH_SCALE = 1.2
+
+
 def _configure_style() -> None:
     mpl.rcParams.update(
         {
@@ -54,11 +61,13 @@ def _configure_style() -> None:
             "ps.fonttype": 42,
             "axes.spines.top": False,
             "axes.spines.right": False,
-            "axes.labelsize": 12,
-            "xtick.labelsize": 10.5,
-            "ytick.labelsize": 10.5,
-            "legend.fontsize": 10,
-            "savefig.dpi": 400,
+            "axes.labelsize": 12 * FONT_SCALE,
+            "xtick.labelsize": 10.5 * FONT_SCALE,
+            "ytick.labelsize": 10.5 * FONT_SCALE,
+            "legend.fontsize": 10 * FONT_SCALE,
+            "axes.titlesize": 12 * FONT_SCALE,
+            "legend.title_fontsize": 10 * FONT_SCALE,
+            "savefig.dpi": 600,
         }
     )
     if sns is not None:
@@ -312,17 +321,86 @@ def _transform_states(
     return transformed.reshape(num_tau, num_windows, -1).transpose(1, 0, 2)
 
 
-def _mean_per_window_wasserstein_to_endpoint(
+def _per_window_wasserstein_to_endpoint(
     state: np.ndarray,
     endpoint: np.ndarray,
-) -> float:
+) -> np.ndarray:
     state_flat = np.asarray(state, dtype=np.float64).reshape(state.shape[0], -1)
     endpoint_flat = np.asarray(endpoint, dtype=np.float64).reshape(endpoint.shape[0], -1)
-    distances = [
-        _wasserstein_empirical(state_i, endpoint_i)
-        for state_i, endpoint_i in zip(state_flat, endpoint_flat)
-    ]
-    return float(np.mean(distances, dtype=np.float64))
+    distances = np.asarray(
+        [
+            _wasserstein_empirical(state_i, endpoint_i)
+            for state_i, endpoint_i in zip(state_flat, endpoint_flat)
+        ],
+        dtype=np.float64,
+    )
+    return distances
+
+
+def _upper_iqr_keep_mask(
+    values: np.ndarray,
+    iqr_multiplier: float = 2.5,
+) -> tuple[np.ndarray, float]:
+    values = np.asarray(values, dtype=np.float64)
+    if values.ndim != 1:
+        raise ValueError(f"values must be 1D, got shape={values.shape}.")
+    q1, q3 = np.quantile(values, [0.25, 0.75])
+    iqr = float(q3 - q1)
+    threshold = float(q3 + iqr_multiplier * iqr)
+    keep_mask = values <= threshold
+    if not np.any(keep_mask):
+        keep_mask = np.ones_like(values, dtype=bool)
+    return keep_mask, threshold
+
+
+def _compute_shared_pdn_outlier_filter(
+    y: np.ndarray,
+    mu_hat: np.ndarray,
+    sigma_hat: np.ndarray,
+    noise: np.ndarray,
+    tau_values: np.ndarray,
+    iqr_multiplier: float = 2.5,
+) -> dict[str, Any]:
+    num_windows = y.shape[0]
+    global_keep_mask = np.ones(num_windows, dtype=bool)
+    pdn_thresholds = []
+    pdn_outlier_counts = []
+    pdn_kept_counts = []
+    z_target = (y - mu_hat) / sigma_hat
+
+    for tau in tau_values:
+        if float(tau) >= 1.0 - 1e-8:
+            pdn_thresholds.append(0.0)
+            pdn_outlier_counts.append(0)
+            pdn_kept_counts.append(int(num_windows))
+            continue
+        tau_f = np.float32(tau)
+        one_minus_tau = np.float32(1.0 - tau)
+        pdn_state = tau_f * z_target + one_minus_tau * noise
+        pdn_distances = _per_window_wasserstein_to_endpoint(pdn_state, z_target)
+        keep_mask_tau, threshold = _upper_iqr_keep_mask(
+            pdn_distances,
+            iqr_multiplier=iqr_multiplier,
+        )
+        global_keep_mask &= keep_mask_tau
+        pdn_thresholds.append(float(threshold))
+        pdn_outlier_counts.append(int(np.size(keep_mask_tau) - np.sum(keep_mask_tau)))
+        pdn_kept_counts.append(int(np.sum(keep_mask_tau)))
+
+    if not np.any(global_keep_mask):
+        global_keep_mask = np.ones(num_windows, dtype=bool)
+
+    removed_local_indices = np.flatnonzero(~global_keep_mask).astype(np.int64)
+    return {
+        "keep_mask": global_keep_mask,
+        "removed_local_indices": removed_local_indices,
+        "removed_count": int(removed_local_indices.shape[0]),
+        "kept_count": int(np.sum(global_keep_mask)),
+        "pdn_outlier_threshold": pdn_thresholds,
+        "pdn_outlier_count": pdn_outlier_counts,
+        "pdn_kept_count": pdn_kept_counts,
+        "iqr_multiplier": float(iqr_multiplier),
+    }
 
 
 def _compute_endpoint_distance_curves(
@@ -331,18 +409,60 @@ def _compute_endpoint_distance_curves(
     sigma_hat: np.ndarray,
     noise: np.ndarray,
     tau_values: np.ndarray,
+    shared_keep_mask: np.ndarray | None = None,
 ) -> dict[str, list[float]]:
-    raw_curve = []
-    pdn_curve = []
+    raw_mean_curve = []
+    pdn_mean_curve = []
+    raw_std_curve = []
+    pdn_std_curve = []
+    raw_var_curve = []
+    pdn_var_curve = []
+    raw_mean_unfiltered_curve = []
+    pdn_mean_unfiltered_curve = []
+    raw_std_unfiltered_curve = []
+    pdn_std_unfiltered_curve = []
+    raw_var_unfiltered_curve = []
+    pdn_var_unfiltered_curve = []
     z_target = (y - mu_hat) / sigma_hat
+    if shared_keep_mask is None:
+        shared_keep_mask = np.ones(y.shape[0], dtype=bool)
+    shared_keep_mask = np.asarray(shared_keep_mask, dtype=bool)
     for tau in tau_values:
         tau_f = np.float32(tau)
         one_minus_tau = np.float32(1.0 - tau)
         raw_state = tau_f * y + one_minus_tau * (mu_hat + sigma_hat * noise)
         pdn_state = tau_f * z_target + one_minus_tau * noise
-        raw_curve.append(_mean_per_window_wasserstein_to_endpoint(raw_state, y))
-        pdn_curve.append(_mean_per_window_wasserstein_to_endpoint(pdn_state, z_target))
-    return {"raw": raw_curve, "pdn": pdn_curve}
+        raw_distances = _per_window_wasserstein_to_endpoint(raw_state, y)
+        pdn_distances = _per_window_wasserstein_to_endpoint(pdn_state, z_target)
+        raw_mean_unfiltered_curve.append(float(np.mean(raw_distances, dtype=np.float64)))
+        pdn_mean_unfiltered_curve.append(float(np.mean(pdn_distances, dtype=np.float64)))
+        raw_std_unfiltered_curve.append(float(np.std(raw_distances, dtype=np.float64)))
+        pdn_std_unfiltered_curve.append(float(np.std(pdn_distances, dtype=np.float64)))
+        raw_var_unfiltered_curve.append(float(np.var(raw_distances, dtype=np.float64)))
+        pdn_var_unfiltered_curve.append(float(np.var(pdn_distances, dtype=np.float64)))
+
+        raw_filtered = raw_distances[shared_keep_mask]
+        pdn_filtered = pdn_distances[shared_keep_mask]
+        raw_mean_curve.append(float(np.mean(raw_filtered, dtype=np.float64)))
+        pdn_mean_curve.append(float(np.mean(pdn_filtered, dtype=np.float64)))
+        raw_std_curve.append(float(np.std(raw_filtered, dtype=np.float64)))
+        pdn_std_curve.append(float(np.std(pdn_filtered, dtype=np.float64)))
+        raw_var_curve.append(float(np.var(raw_filtered, dtype=np.float64)))
+        pdn_var_curve.append(float(np.var(pdn_filtered, dtype=np.float64)))
+    return {
+        "raw": raw_mean_curve,
+        "pdn": pdn_mean_curve,
+        "raw_std": raw_std_curve,
+        "pdn_std": pdn_std_curve,
+        "raw_var": raw_var_curve,
+        "pdn_var": pdn_var_curve,
+        "raw_unfiltered": raw_mean_unfiltered_curve,
+        "pdn_unfiltered": pdn_mean_unfiltered_curve,
+        "raw_std_unfiltered": raw_std_unfiltered_curve,
+        "pdn_std_unfiltered": pdn_std_unfiltered_curve,
+        "raw_var_unfiltered": raw_var_unfiltered_curve,
+        "pdn_var_unfiltered": pdn_var_unfiltered_curve,
+    }
 
 
 def _tau_colors(num_tau: int) -> list[tuple[float, float, float, float]]:
@@ -358,10 +478,11 @@ def _plot_path_bundle(
     tau_values: np.ndarray,
     explained_ratio: np.ndarray,
     output_path: str,
+    show_colorbar: bool = True,
     line_alpha: float = 0.22,
     linewidth: float = 0.9,
 ) -> None:
-    fig, ax = plt.subplots(figsize=(5.4, 4.7), dpi=400, constrained_layout=True)
+    fig, ax = plt.subplots(figsize=(5.4, 4.7), dpi=600, constrained_layout=True)
     colors = _tau_colors(len(tau_values))
     for path in coords:
         for tau_idx in range(len(tau_values) - 1):
@@ -371,13 +492,13 @@ def _plot_path_bundle(
                 segment[:, 1],
                 color=colors[tau_idx + 1],
                 alpha=line_alpha,
-                linewidth=linewidth,
+                linewidth=linewidth * PATH_LINEWIDTH_SCALE,
                 solid_capstyle="round",
             )
         ax.scatter(
             path[0, 0],
             path[0, 1],
-            s=10,
+            s=10 * MARKER_AREA_SCALE,
             color=colors[0],
             alpha=0.30,
             linewidths=0.0,
@@ -387,7 +508,7 @@ def _plot_path_bundle(
         ax.scatter(
             path[-1, 0],
             path[-1, 1],
-            s=16,
+            s=16 * MARKER_AREA_SCALE,
             color=colors[-1],
             alpha=0.42,
             linewidths=0.0,
@@ -400,14 +521,14 @@ def _plot_path_bundle(
         centroid_path[:, 0],
         centroid_path[:, 1],
         color="#1F2937",
-        linewidth=2.0,
+        linewidth=2.0 * PATH_LINEWIDTH_SCALE,
         alpha=0.90,
         zorder=4,
     )
     ax.scatter(
         centroid_path[0, 0],
         centroid_path[0, 1],
-        s=34,
+        s=34 * MARKER_AREA_SCALE,
         color="#1F2937",
         marker="o",
         linewidths=0.0,
@@ -416,15 +537,16 @@ def _plot_path_bundle(
     ax.scatter(
         centroid_path[-1, 0],
         centroid_path[-1, 1],
-        s=40,
+        s=40 * MARKER_AREA_SCALE,
         color="#1F2937",
         marker="^",
         linewidths=0.0,
         zorder=5,
     )
 
-    ax.set_xlabel(f"PC1 ({100.0 * explained_ratio[0]:.1f}%)")
-    ax.set_ylabel(f"PC2 ({100.0 * explained_ratio[1]:.1f}%)")
+    ax.set_xlabel(f"PC1 ({100.0 * explained_ratio[0]:.1f}%)", fontsize=PCA_TEXT_SIZE)
+    ax.set_ylabel(f"PC2 ({100.0 * explained_ratio[1]:.1f}%)", fontsize=PCA_TEXT_SIZE)
+    ax.tick_params(axis="both", labelsize=PCA_TEXT_SIZE)
     ax.grid(True, linestyle="--", alpha=0.20)
 
     xs = coords[:, :, 0].ravel()
@@ -436,11 +558,13 @@ def _plot_path_bundle(
     ax.set_xlim(x_lo - x_pad, x_hi + x_pad)
     ax.set_ylim(y_lo - y_pad, y_hi + y_pad)
 
-    cmap = mcolors.LinearSegmentedColormap.from_list("tau_flow", colors)
-    norm = mpl.colors.Normalize(vmin=float(tau_values.min()), vmax=float(tau_values.max()))
-    sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
-    cbar = fig.colorbar(sm, ax=ax, fraction=0.055, pad=0.03)
-    cbar.set_label("Flow time $\\tau$")
+    if show_colorbar:
+        cmap = mcolors.LinearSegmentedColormap.from_list("tau_flow", colors)
+        norm = mpl.colors.Normalize(vmin=float(tau_values.min()), vmax=float(tau_values.max()))
+        sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
+        cbar = fig.colorbar(sm, ax=ax, fraction=0.055, pad=0.03)
+        cbar.set_label("Flow time $\\tau$", fontsize=PCA_TEXT_SIZE)
+        cbar.ax.tick_params(labelsize=PCA_TEXT_SIZE)
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     fig.savefig(output_path, bbox_inches="tight")
@@ -456,6 +580,8 @@ def _plot_endpoint_distance_bars(
     tau_values = np.asarray(tau_values, dtype=np.float64)
     raw_values = np.asarray(endpoint_distance["raw"], dtype=np.float64)
     pdn_values = np.asarray(endpoint_distance["pdn"], dtype=np.float64)
+    raw_std = np.asarray(endpoint_distance["raw_std"], dtype=np.float64)
+    pdn_std = np.asarray(endpoint_distance["pdn_std"], dtype=np.float64)
     plot_mask = tau_values < (1.0 - 1e-8)
     if not np.any(plot_mask):
         plot_mask = np.ones_like(tau_values, dtype=bool)
@@ -463,8 +589,10 @@ def _plot_endpoint_distance_bars(
     tau_plot = tau_values[plot_mask]
     raw_plot = raw_values[plot_mask]
     pdn_plot = pdn_values[plot_mask]
+    raw_std_plot = raw_std[plot_mask]
+    pdn_std_plot = pdn_std[plot_mask]
 
-    fig, ax = plt.subplots(figsize=(5.6, 4.4), dpi=400, constrained_layout=True)
+    fig, ax = plt.subplots(figsize=(5.6, 4.4), dpi=600, constrained_layout=True)
     if sns is not None:
         raw_color, pdn_color = sns.color_palette(["#D98989", "#5B84C4"])
     else:
@@ -494,16 +622,44 @@ def _plot_endpoint_distance_bars(
         label="PDN Space",
         zorder=3,
     )
+    errorbar_style = {
+        "fmt": "none",
+        "elinewidth": 1.3,
+        "ecolor": "#303030",
+        "capsize": 4.0,
+        "capthick": 1.3,
+        "zorder": 4,
+    }
+    ax.errorbar(
+        x - width / 2.0,
+        raw_plot,
+        yerr=raw_std_plot,
+        **errorbar_style,
+    )
+    ax.errorbar(
+        x + width / 2.0,
+        pdn_plot,
+        yerr=pdn_std_plot,
+        **errorbar_style,
+    )
 
-    ax.set_title(dataset_name, fontsize=14, fontweight="semibold", pad=7)
     ax.set_xlabel("Flow time $\\tau$")
-    ax.set_ylabel("Mean Wasserstein-1 Distance to $X_1$ / $Z_1$")
+    ax.set_ylabel("Mean W1 to Target")
     ax.set_xticks(x)
     ax.set_xticklabels([f"{tau:.2f}" for tau in tau_plot])
+    ax.xaxis.label.set_size(PCA_TEXT_SIZE)
+    ax.yaxis.label.set_size(PCA_TEXT_SIZE)
+    ax.tick_params(axis="both", labelsize=PCA_TEXT_SIZE)
     ax.grid(True, axis="y", linestyle="--", alpha=0.24, zorder=0)
     ax.grid(False, axis="x")
 
-    ymax = float(max(np.max(raw_plot), np.max(pdn_plot), 1e-8))
+    ymax = float(
+        max(
+            np.max(raw_plot + raw_std_plot),
+            np.max(pdn_plot + pdn_std_plot),
+            1e-8,
+        )
+    )
     ax.set_ylim(0.0, ymax * 1.42)
     ax.margins(x=0.02)
 
@@ -511,7 +667,14 @@ def _plot_endpoint_distance_bars(
         Patch(facecolor=raw_color, edgecolor="white", linewidth=0.8, hatch="xxx", label="Raw Space"),
         Patch(facecolor=pdn_color, edgecolor="white", linewidth=0.8, hatch="////", label="PDN Space"),
     ]
-    ax.legend(handles=legend_handles, loc="upper left", frameon=True, framealpha=0.95)
+    legend_fontsize = 10.5 * FONT_SCALE
+    ax.legend(
+        handles=legend_handles,
+        loc="upper left",
+        frameon=True,
+        framealpha=0.95,
+        fontsize=legend_fontsize,
+    )
 
     annotation_base = ymax * 0.08
     arrow_color = "#2F2F2F"
@@ -524,14 +687,17 @@ def _plot_endpoint_distance_bars(
         sign = "-" if improvement >= 0.0 else "+"
         label = f"{sign}{abs(improvement):.1f}%"
         text_x = x[idx] - width * 0.02
-        text_y = max(raw_val, pdn_val) + annotation_base * (1.15 + 0.18 * (idx % 2))
+        text_y = (
+            max(raw_val + raw_std_plot[idx], pdn_val + pdn_std_plot[idx])
+            + annotation_base * (1.15 + 0.18 * (idx % 2))
+        )
         ax.annotate(
             label,
             xy=(pdn_bar.get_x() + pdn_bar.get_width() / 2.0, pdn_val),
             xytext=(text_x, text_y),
             ha="center",
             va="bottom",
-            fontsize=9.2,
+            fontsize=9.5 * FONT_SCALE,
             color=arrow_color,
             arrowprops={
                 "arrowstyle": "-|>",
@@ -556,6 +722,9 @@ def _save_metadata(
     path: str,
     dataset_name: str,
     selection: WindowSelection,
+    selected_indices: np.ndarray,
+    selected_indices_before_shared_filter: np.ndarray,
+    shared_pdn_filter: dict[str, Any],
     tau_values: np.ndarray,
     explained_variance_ratio: dict[str, list[float]],
     endpoint_distance: dict[str, list[float]],
@@ -579,22 +748,49 @@ def _save_metadata(
         "normalized_outlier_threshold": (
             None if selection.outlier_threshold is None else float(selection.outlier_threshold)
         ),
-        "selected_indices": [int(v) for v in selection.selected_indices.tolist()],
+        "selected_indices_before_shared_filter": [
+            int(v) for v in selected_indices_before_shared_filter.tolist()
+        ],
+        "selected_indices": [int(v) for v in selected_indices.tolist()],
         "selected_drift_scores": [
-            float(selection.drift_scores[int(v)]) for v in selection.selected_indices.tolist()
+            float(selection.drift_scores[int(v)]) for v in selected_indices.tolist()
         ],
         "selected_normalized_endpoint_rms": (
             []
             if selection.outlier_scores is None
-            else [float(selection.outlier_scores[int(v)]) for v in selection.selected_indices.tolist()]
+            else [float(selection.outlier_scores[int(v)]) for v in selected_indices.tolist()]
         ),
         "tau_values": [float(v) for v in tau_values.tolist()],
         "pca_components": int(pca_components),
         "explained_variance_ratio": explained_variance_ratio,
         "endpoint_distance_metric": "mean_per_window_wasserstein_1d",
+        "endpoint_distance_outlier_filter": {
+            "space": "pdn",
+            "rule": "upper_iqr_fence_union_over_tau",
+            "iqr_multiplier": float(shared_pdn_filter["iqr_multiplier"]),
+            "removed_count": int(shared_pdn_filter["removed_count"]),
+            "kept_count": int(shared_pdn_filter["kept_count"]),
+            "removed_selected_indices": [
+                int(selected_indices_before_shared_filter[int(i)])
+                for i in shared_pdn_filter["removed_local_indices"].tolist()
+            ],
+        },
         "endpoint_distance": {
             "raw": [float(v) for v in endpoint_distance["raw"]],
             "pdn": [float(v) for v in endpoint_distance["pdn"]],
+            "raw_std": [float(v) for v in endpoint_distance["raw_std"]],
+            "pdn_std": [float(v) for v in endpoint_distance["pdn_std"]],
+            "raw_var": [float(v) for v in endpoint_distance["raw_var"]],
+            "pdn_var": [float(v) for v in endpoint_distance["pdn_var"]],
+            "raw_unfiltered": [float(v) for v in endpoint_distance["raw_unfiltered"]],
+            "pdn_unfiltered": [float(v) for v in endpoint_distance["pdn_unfiltered"]],
+            "raw_std_unfiltered": [float(v) for v in endpoint_distance["raw_std_unfiltered"]],
+            "pdn_std_unfiltered": [float(v) for v in endpoint_distance["pdn_std_unfiltered"]],
+            "raw_var_unfiltered": [float(v) for v in endpoint_distance["raw_var_unfiltered"]],
+            "pdn_var_unfiltered": [float(v) for v in endpoint_distance["pdn_var_unfiltered"]],
+            "pdn_outlier_threshold": [float(v) for v in shared_pdn_filter["pdn_outlier_threshold"]],
+            "pdn_outlier_count": [int(v) for v in shared_pdn_filter["pdn_outlier_count"]],
+            "pdn_kept_count": [int(v) for v in shared_pdn_filter["pdn_kept_count"]],
         },
     }
     payload["dispersion"] = payload["endpoint_distance"]
@@ -664,11 +860,27 @@ def plot_pca_transport_path(
         normalized_outlier_quantile=normalized_outlier_quantile,
     )
     idx = selection.selected_indices
-    y_sel = y[idx]
-    mu_hat_sel = mu_hat[idx]
-    sigma_hat_sel = sigma_hat[idx]
+    idx_before_shared_filter = idx.copy()
+    y_selected_all = y[idx_before_shared_filter]
+    mu_hat_selected_all = mu_hat[idx_before_shared_filter]
+    sigma_hat_selected_all = sigma_hat[idx_before_shared_filter]
     rng = np.random.default_rng(seed)
-    noise = rng.standard_normal(size=y_sel.shape, dtype=np.float32)
+    noise_selected_all = rng.standard_normal(size=y_selected_all.shape, dtype=np.float32)
+
+    shared_pdn_filter = _compute_shared_pdn_outlier_filter(
+        y=y_selected_all,
+        mu_hat=mu_hat_selected_all,
+        sigma_hat=sigma_hat_selected_all,
+        noise=noise_selected_all,
+        tau_values=tau_arr,
+        iqr_multiplier=2.5,
+    )
+    shared_keep_mask = shared_pdn_filter["keep_mask"]
+    idx = idx_before_shared_filter[shared_keep_mask]
+    y_sel = y_selected_all[shared_keep_mask]
+    mu_hat_sel = mu_hat_selected_all[shared_keep_mask]
+    sigma_hat_sel = sigma_hat_selected_all[shared_keep_mask]
+    noise = noise_selected_all[shared_keep_mask]
 
     raw_ipca = _fit_incremental_pca(
         space="raw",
@@ -713,11 +925,12 @@ def plot_pca_transport_path(
     )
 
     endpoint_distance = _compute_endpoint_distance_curves(
-        y=y_sel,
-        mu_hat=mu_hat_sel,
-        sigma_hat=sigma_hat_sel,
-        noise=noise,
+        y=y_selected_all,
+        mu_hat=mu_hat_selected_all,
+        sigma_hat=sigma_hat_selected_all,
+        noise=noise_selected_all,
         tau_values=tau_arr,
+        shared_keep_mask=shared_keep_mask,
     )
     output_paths = _resolve_panel_output_paths(
         output_path=output_path,
@@ -729,12 +942,14 @@ def plot_pca_transport_path(
         tau_values=tau_arr,
         explained_ratio=raw_ipca.explained_variance_ratio_[:2],
         output_path=output_paths["raw_pca"],
+        show_colorbar=False,
     )
     _plot_path_bundle(
         coords=pdn_coords[:, :, :2],
         tau_values=tau_arr,
         explained_ratio=pdn_ipca.explained_variance_ratio_[:2],
         output_path=output_paths["pdn_pca"],
+        show_colorbar=True,
     )
     _plot_endpoint_distance_bars(
         tau_values=tau_arr,
@@ -752,6 +967,9 @@ def plot_pca_transport_path(
             path=metadata_path,
             dataset_name=dataset_name,
             selection=selection,
+            selected_indices=idx,
+            selected_indices_before_shared_filter=idx_before_shared_filter,
+            shared_pdn_filter=shared_pdn_filter,
             tau_values=tau_arr,
             explained_variance_ratio=explained_variance_ratio,
             endpoint_distance=endpoint_distance,
@@ -762,6 +980,9 @@ def plot_pca_transport_path(
 
     result = {
         "selected_indices": [int(v) for v in idx.tolist()],
+        "selected_indices_before_shared_filter": [
+            int(v) for v in idx_before_shared_filter.tolist()
+        ],
         "candidate_count_before_outlier_filter": int(
             selection.candidate_indices_before_outlier_filter.shape[0]
             if selection.candidate_indices_before_outlier_filter is not None
@@ -779,9 +1000,33 @@ def plot_pca_transport_path(
         "output_paths": output_paths,
         "explained_variance_ratio": explained_variance_ratio,
         "endpoint_distance_metric": "mean_per_window_wasserstein_1d",
+        "endpoint_distance_outlier_filter": {
+            "space": "pdn",
+            "rule": "upper_iqr_fence_union_over_tau",
+            "iqr_multiplier": float(shared_pdn_filter["iqr_multiplier"]),
+            "removed_count": int(shared_pdn_filter["removed_count"]),
+            "kept_count": int(shared_pdn_filter["kept_count"]),
+            "removed_selected_indices": [
+                int(idx_before_shared_filter[int(i)])
+                for i in shared_pdn_filter["removed_local_indices"].tolist()
+            ],
+        },
         "endpoint_distance": {
             "raw": [float(v) for v in endpoint_distance["raw"]],
             "pdn": [float(v) for v in endpoint_distance["pdn"]],
+            "raw_std": [float(v) for v in endpoint_distance["raw_std"]],
+            "pdn_std": [float(v) for v in endpoint_distance["pdn_std"]],
+            "raw_var": [float(v) for v in endpoint_distance["raw_var"]],
+            "pdn_var": [float(v) for v in endpoint_distance["pdn_var"]],
+            "raw_unfiltered": [float(v) for v in endpoint_distance["raw_unfiltered"]],
+            "pdn_unfiltered": [float(v) for v in endpoint_distance["pdn_unfiltered"]],
+            "raw_std_unfiltered": [float(v) for v in endpoint_distance["raw_std_unfiltered"]],
+            "pdn_std_unfiltered": [float(v) for v in endpoint_distance["pdn_std_unfiltered"]],
+            "raw_var_unfiltered": [float(v) for v in endpoint_distance["raw_var_unfiltered"]],
+            "pdn_var_unfiltered": [float(v) for v in endpoint_distance["pdn_var_unfiltered"]],
+            "pdn_outlier_threshold": [float(v) for v in shared_pdn_filter["pdn_outlier_threshold"]],
+            "pdn_outlier_count": [int(v) for v in shared_pdn_filter["pdn_outlier_count"]],
+            "pdn_kept_count": [int(v) for v in shared_pdn_filter["pdn_kept_count"]],
         },
     }
     result["dispersion"] = result["endpoint_distance"]

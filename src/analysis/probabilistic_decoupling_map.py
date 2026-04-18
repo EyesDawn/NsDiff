@@ -126,9 +126,9 @@ class SelectedPairs:
 class MethodScores:
     spec: MethodSpec
     macro_all: np.ndarray
-    residual_all: np.ndarray
-    macro_high: np.ndarray
-    residual_high: np.ndarray
+    micro_all: np.ndarray
+    macro_mid: np.ndarray
+    micro_mid: np.ndarray
     centroids: Dict[str, Tuple[float, float]]
 
 
@@ -137,13 +137,14 @@ def _configure_style() -> None:
         {
             "pdf.fonttype": 42,
             "ps.fonttype": 42,
-            "axes.spines.top": False,
-            "axes.spines.right": False,
-            "axes.labelsize": 12,
-            "axes.titlesize": 12,
-            "xtick.labelsize": 10.5,
-            "ytick.labelsize": 10.5,
-            "legend.fontsize": 9.5,
+            "axes.spines.top": True,
+            "axes.spines.right": True,
+            "axes.linewidth": 1.15,
+            "axes.labelsize": 16,
+            "axes.titlesize": 16,
+            "xtick.labelsize": 14,
+            "ytick.labelsize": 14,
+            "legend.fontsize": 13,
             "savefig.dpi": 600,
         }
     )
@@ -488,6 +489,31 @@ def _energy_score(
     return scores
 
 
+def _obs_distance_score(
+    sample_cloud: np.ndarray,
+    truth: np.ndarray,
+    batch_size: int = 128,
+) -> np.ndarray:
+    if sample_cloud.ndim != 3:
+        raise ValueError("sample_cloud must have shape [M, S, K].")
+    if truth.ndim != 2:
+        raise ValueError("truth must have shape [M, K].")
+    if sample_cloud.shape[0] != truth.shape[0]:
+        raise ValueError("sample_cloud and truth must share the same leading dimension.")
+
+    num_items = sample_cloud.shape[0]
+    scores = np.empty((num_items,), dtype=np.float32)
+
+    for start in range(0, num_items, batch_size):
+        end = min(start + batch_size, num_items)
+        cloud = sample_cloud[start:end].astype(np.float32, copy=False)
+        obs = truth[start:end].astype(np.float32, copy=False)
+        diff_obs = cloud - obs[:, None, :]
+        scores[start:end] = np.linalg.norm(diff_obs, axis=-1).mean(axis=1)
+
+    return scores
+
+
 def _compute_method_scores(
     artifact: MethodArtifact,
     selected: SelectedPairs,
@@ -519,46 +545,37 @@ def _compute_method_scores(
     truth_residual = (pair_truth - truth_mean[:, None]) / truth_std[:, None]
 
     macro_all = _energy_score(macro_samples, macro_truth, batch_size=batch_size)
-    residual_all = _energy_score(sample_residual, truth_residual, batch_size=batch_size)
-
-    high_idx = selected.high_pair_indices
+    micro_all = _obs_distance_score(sample_residual, truth_residual, batch_size=batch_size)
     low_idx = selected.low_pair_indices
     mid_idx = selected.mid_pair_indices
-    high_bin_idx = np.flatnonzero(selected.drift_scores >= selected.mid_drift_threshold).astype(
-        np.int64
-    )
 
     centroids = {
         "low": (
             float(np.mean(macro_all[low_idx])),
-            float(np.mean(residual_all[low_idx])),
+            float(np.mean(micro_all[low_idx])),
         ),
         "mid": (
             float(np.mean(macro_all[mid_idx])),
-            float(np.mean(residual_all[mid_idx])),
-        ),
-        "high": (
-            float(np.mean(macro_all[high_bin_idx])),
-            float(np.mean(residual_all[high_bin_idx])),
+            float(np.mean(micro_all[mid_idx])),
         ),
     }
 
     return MethodScores(
         spec=artifact.spec,
         macro_all=macro_all,
-        residual_all=residual_all,
-        macro_high=macro_all[high_idx],
-        residual_high=residual_all[high_idx],
+        micro_all=micro_all,
+        macro_mid=macro_all[mid_idx],
+        micro_mid=micro_all[mid_idx],
         centroids=centroids,
     )
 
 
-def _compute_axis_limits(method_scores: Sequence[MethodScores]) -> Tuple[Tuple[float, float], Tuple[float, float]]:
+def _compute_centroid_axis_limits(
+    method_scores: Sequence[MethodScores],
+) -> Tuple[Tuple[float, float], Tuple[float, float]]:
     xs = []
     ys = []
     for item in method_scores:
-        xs.append(item.macro_high)
-        ys.append(item.residual_high)
         for centroid in item.centroids.values():
             xs.append(np.asarray([centroid[0]], dtype=np.float32))
             ys.append(np.asarray([centroid[1]], dtype=np.float32))
@@ -572,16 +589,10 @@ def _compute_axis_limits(method_scores: Sequence[MethodScores]) -> Tuple[Tuple[f
         if math.isclose(vmin, vmax):
             pad = 0.05 * max(abs(vmin), 1.0)
             return vmin - pad, vmax + pad
-        pad = 0.08 * (vmax - vmin)
+        pad = 0.06 * (vmax - vmin)
         return vmin - pad, vmax + pad
 
     return _limits(x_all), _limits(y_all)
-
-
-def _compute_global_medians(method_scores: Sequence[MethodScores]) -> Tuple[float, float]:
-    x_all = np.concatenate([item.macro_high for item in method_scores])
-    y_all = np.concatenate([item.residual_high for item in method_scores])
-    return float(np.median(x_all)), float(np.median(y_all))
 
 
 def _kde_thresholds(z: np.ndarray, masses: Sequence[float]) -> List[float]:
@@ -636,76 +647,10 @@ def _add_better_arrow(ax: plt.Axes) -> None:
         xytext=(0.20, 0.22),
         xycoords="axes fraction",
         textcoords="axes fraction",
-        fontsize=10,
+        fontsize=13.5,
         color="#666666",
-        arrowprops=dict(arrowstyle="->", color="#B0B0B0", lw=1.6),
+        arrowprops=dict(arrowstyle="->", color="#B0B0B0", lw=2.1),
     )
-
-
-def _plot_decoupling_map(
-    ax: plt.Axes,
-    method_scores: Sequence[MethodScores],
-    global_median: Tuple[float, float],
-    xlim: Tuple[float, float],
-    ylim: Tuple[float, float],
-) -> None:
-    ax.axvline(global_median[0], color="#D0D0D0", lw=1.0, ls="--", zorder=0)
-    ax.axhline(global_median[1], color="#D0D0D0", lw=1.0, ls="--", zorder=0)
-
-    for item in method_scores:
-        ax.scatter(
-            item.macro_high,
-            item.residual_high,
-            s=16,
-            alpha=0.18,
-            color=item.spec.color,
-            marker=item.spec.marker,
-            linewidths=0.0,
-            zorder=1,
-        )
-        _draw_density_contours(
-            ax=ax,
-            x=item.macro_high,
-            y=item.residual_high,
-            color=item.spec.color,
-        )
-        centroid_x = float(np.mean(item.macro_high))
-        centroid_y = float(np.mean(item.residual_high))
-        ax.scatter(
-            [centroid_x],
-            [centroid_y],
-            s=160 if item.spec.marker != "*" else 240,
-            color=item.spec.color,
-            marker=item.spec.marker,
-            edgecolors="black",
-            linewidths=0.8,
-            zorder=5,
-        )
-
-    ax.set_xlim(*xlim)
-    ax.set_ylim(*ylim)
-    ax.set_title("(a) Distribution-level decoupling across high-drift windows")
-    ax.set_xlabel("Macro distribution error")
-    ax.set_ylabel("Canonical residual distribution error")
-    _add_better_arrow(ax)
-
-
-def _default_label_methods(method_scores: Sequence[MethodScores]) -> List[str]:
-    labels = []
-    if any(item.spec.display_name == "PDN-Flow" for item in method_scores):
-        labels.append("PDN-Flow")
-    for family in ("standard_diffusion", "informative_prior"):
-        for item in method_scores:
-            if item.spec.family == family:
-                labels.append(item.spec.display_name)
-                break
-    seen = set()
-    result = []
-    for label in labels:
-        if label not in seen:
-            result.append(label)
-            seen.add(label)
-    return result
 
 
 def _plot_centroid_shift(
@@ -713,80 +658,53 @@ def _plot_centroid_shift(
     method_scores: Sequence[MethodScores],
     xlim: Tuple[float, float],
     ylim: Tuple[float, float],
-    label_methods: Optional[Sequence[str]] = None,
 ) -> None:
-    label_set = set(label_methods or _default_label_methods(method_scores))
-
     for item in method_scores:
         xs = [
             item.centroids["low"][0],
             item.centroids["mid"][0],
-            item.centroids["high"][0],
         ]
         ys = [
             item.centroids["low"][1],
             item.centroids["mid"][1],
-            item.centroids["high"][1],
         ]
-        ax.plot(xs, ys, color=item.spec.color, lw=1.8, alpha=0.95, zorder=2)
+        ax.plot(xs, ys, color=item.spec.color, lw=2.3, alpha=0.95, zorder=2)
         ax.annotate(
             "",
             xy=(xs[1], ys[1]),
             xytext=(xs[0], ys[0]),
-            arrowprops=dict(arrowstyle="->", color=item.spec.color, lw=1.6, alpha=0.95),
-        )
-        ax.annotate(
-            "",
-            xy=(xs[2], ys[2]),
-            xytext=(xs[1], ys[1]),
-            arrowprops=dict(arrowstyle="->", color=item.spec.color, lw=1.6, alpha=0.95),
+            arrowprops=dict(arrowstyle="->", color=item.spec.color, lw=2.1, alpha=0.95),
         )
         ax.scatter(
             [xs[0]],
             [ys[0]],
-            s=55,
+            s=92,
             facecolors="none",
             edgecolors=item.spec.color,
             marker=item.spec.marker,
-            linewidths=1.5,
+            linewidths=1.9,
             zorder=3,
         )
         ax.scatter(
             [xs[1]],
             [ys[1]],
-            s=95,
-            color=item.spec.color,
-            alpha=0.55,
-            marker=item.spec.marker,
-            linewidths=0.0,
-            zorder=4,
-        )
-        ax.scatter(
-            [xs[2]],
-            [ys[2]],
-            s=160 if item.spec.marker != "*" else 220,
+            s=235 if item.spec.marker != "*" else 300,
             color=item.spec.color,
             marker=item.spec.marker,
             edgecolors="black",
-            linewidths=0.8,
+            linewidths=1.15,
             zorder=5,
         )
 
-        if item.spec.display_name in label_set:
-            ax.annotate(
-                item.spec.display_name,
-                xy=(xs[2], ys[2]),
-                xytext=(6, 4),
-                textcoords="offset points",
-                fontsize=9,
-                color=item.spec.color,
-            )
-
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
-    ax.set_title("(b) Centroid shift from low to high drift")
     ax.set_xlabel("Macro distribution error")
-    ax.set_ylabel("Canonical residual distribution error")
+    ax.set_ylabel("Micro distribution error")
+    ax.tick_params(axis="both", which="major", width=1.15, length=5.5)
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_linewidth(1.15)
+        spine.set_color("#4A4A4A")
     _add_better_arrow(ax)
 
 
@@ -801,12 +719,28 @@ def _build_legend(method_scores: Sequence[MethodScores]) -> List[Line2D]:
                 color=item.spec.color,
                 markerfacecolor=item.spec.color,
                 markeredgecolor="black" if item.spec.marker == "*" else item.spec.color,
-                markersize=8 if item.spec.marker != "*" else 10,
-                linewidth=1.8,
+                markersize=11.5 if item.spec.marker != "*" else 13.5,
+                linewidth=2.3,
                 label=item.spec.display_name,
             )
         )
     return handles
+
+
+def _reorder_legend_handles(handles: Sequence[Line2D]) -> List[Line2D]:
+    handle_map = {str(handle.get_label()): handle for handle in handles}
+    preferred_order = [
+        "TimeGrad",
+        "TMDM",
+        "TimeDiff",
+        "NsDiff",
+        "CSDI",
+        "PDN-Flow",
+    ]
+    reordered = [handle_map[name] for name in preferred_order if name in handle_map]
+    seen = {handle.get_label() for handle in reordered}
+    reordered.extend(handle for handle in handles if handle.get_label() not in seen)
+    return reordered
 
 
 def _scores_to_metadata(
@@ -818,24 +752,22 @@ def _scores_to_metadata(
         "dataset_name": dataset_name,
         "selected_feature_dims": selected.selected_dims.tolist(),
         "num_pairs": int(selected.drift_scores.shape[0]),
-        "num_high_pairs": int(selected.high_pair_indices.shape[0]),
         "num_low_pairs": int(selected.low_pair_indices.shape[0]),
         "num_mid_pairs": int(selected.mid_pair_indices.shape[0]),
-        "high_drift_threshold": float(selected.high_drift_threshold),
         "low_drift_threshold": float(selected.low_drift_threshold),
-        "high_bin_threshold": float(selected.mid_drift_threshold),
+        "mid_drift_threshold": float(selected.mid_drift_threshold),
         "methods": {},
     }
     for item in method_scores:
         metadata["methods"][item.spec.display_name] = {
             "path": item.spec.path,
             "family": item.spec.family,
-            "high_drift_centroid": {
-                "macro": float(np.mean(item.macro_high)),
-                "residual": float(np.mean(item.residual_high)),
+            "mid_drift_centroid": {
+                "macro": float(np.mean(item.macro_mid)),
+                "micro": float(np.mean(item.micro_mid)),
             },
             "centroids": {
-                key: {"macro": float(value[0]), "residual": float(value[1])}
+                key: {"macro": float(value[0]), "micro": float(value[1])}
                 for key, value in item.centroids.items()
             },
         }
@@ -854,7 +786,6 @@ def run_analysis(
     low_drift_quantile: float,
     high_drift_quantile: float,
     feature_dims: Optional[Sequence[int]],
-    label_methods: Optional[Sequence[str]],
     eps: float,
     energy_batch_size: int,
 ) -> Dict[str, Any]:
@@ -892,35 +823,34 @@ def run_analysis(
             )
         )
 
-    xlim, ylim = _compute_axis_limits(scores)
-    medians = _compute_global_medians(scores)
+    xlim, ylim = _compute_centroid_axis_limits(scores)
 
-    fig, axes = plt.subplots(1, 2, figsize=(12.8, 5.6), constrained_layout=False)
-    _plot_decoupling_map(
-        ax=axes[0],
-        method_scores=scores,
-        global_median=medians,
-        xlim=xlim,
-        ylim=ylim,
-    )
+    fig, ax = plt.subplots(1, 1, figsize=(7.4, 6.0), constrained_layout=False)
     _plot_centroid_shift(
-        ax=axes[1],
+        ax=ax,
         method_scores=scores,
         xlim=xlim,
         ylim=ylim,
-        label_methods=label_methods,
     )
 
-    handles = _build_legend(scores)
-    fig.legend(
+    handles = _reorder_legend_handles(_build_legend(scores))
+    ax.legend(
         handles=handles,
-        loc="lower center",
-        ncol=min(len(handles), 6),
-        bbox_to_anchor=(0.5, -0.02),
-        frameon=False,
+        loc="lower right",
+        ncol=3,
+        bbox_to_anchor=(0.985, 0.03),
+        frameon=True,
+        fancybox=False,
+        framealpha=0.95,
+        edgecolor="#D0D0D0",
+        facecolor="white",
+        borderpad=0.55,
+        labelspacing=0.45,
+        handlelength=1.9,
+        handletextpad=0.55,
+        columnspacing=1.0,
     )
-    fig.suptitle("%s: probabilistic decoupling under non-stationarity" % dataset_name, y=0.98)
-    fig.tight_layout(rect=[0.0, 0.06, 1.0, 0.95])
+    fig.tight_layout()
 
     out_dir = os.path.dirname(output_path)
     if out_dir:
@@ -957,7 +887,6 @@ def main() -> None:
     parser.add_argument("--low_drift_quantile", type=float, default=0.30)
     parser.add_argument("--high_drift_quantile", type=float, default=0.70)
     parser.add_argument("--feature_dims", type=int, nargs="*", default=None)
-    parser.add_argument("--label_methods", type=str, nargs="*", default=None)
     parser.add_argument("--eps", type=float, default=1e-6)
     parser.add_argument("--energy_batch_size", type=int, default=128)
 
@@ -974,7 +903,6 @@ def main() -> None:
         low_drift_quantile=args.low_drift_quantile,
         high_drift_quantile=args.high_drift_quantile,
         feature_dims=args.feature_dims,
-        label_methods=args.label_methods,
         eps=args.eps,
         energy_batch_size=args.energy_batch_size,
     )

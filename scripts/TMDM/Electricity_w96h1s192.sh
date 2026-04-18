@@ -12,7 +12,6 @@ export WANDB_DISABLED="${WANDB_DISABLED:-true}"
 SEEDS="${SEEDS:-[1]}"
 EPOCHS="${EPOCHS:-50}"
 PATIENCE="${PATIENCE:-10}"
-TRAIN_NUM_SAMPLES="${TRAIN_NUM_SAMPLES:-${NUM_SAMPLES:-20}}"
 BATCH_SIZE="${BATCH_SIZE:-8}"
 DEVICE="${DEVICE:-cuda:2}"
 NUM_WORKER="${NUM_WORKER:-0}"
@@ -27,5 +26,4 @@ python3 -u ./src/experiments/TMDM.py \
    --windows=96 \
    --epochs="$EPOCHS" \
    --patience="$PATIENCE" \
-   --num_samples="$TRAIN_NUM_SAMPLES" \
    runs --seeds="$SEEDS"

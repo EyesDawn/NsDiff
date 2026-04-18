@@ -68,6 +68,7 @@ def export_from_run(
     num_worker: Optional[int],
     batch_size: Optional[int],
     num_samples: Optional[int],
+    selected_window_indices: Optional[Any],
 ) -> Optional[Dict[str, Any]]:
     run_dir = os.path.abspath(run_dir)
     config = _load_args(run_dir)
@@ -91,9 +92,23 @@ def export_from_run(
         use_origin_scale=use_origin_scale,
         eps=eps,
         max_windows=max_windows,
+        selected_window_indices=selected_window_indices,
         run_dir_override=run_dir,
         return_result=False,
     )
+
+
+def _load_selected_window_indices(selection_path: Optional[str]) -> Optional[Any]:
+    if selection_path is None:
+        return None
+    with open(selection_path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+    window_indices = payload.get("window_indices")
+    if not isinstance(window_indices, list) or not window_indices:
+        raise ValueError(
+            "selection_path must point to a JSON file that contains a non-empty `window_indices` list."
+        )
+    return window_indices
 
 
 def main() -> None:
@@ -113,6 +128,7 @@ def main() -> None:
     parser.add_argument("--max_windows", type=int, default=None)
     parser.add_argument("--eps", type=float, default=1e-6)
     parser.add_argument("--normalized_scale", action="store_true")
+    parser.add_argument("--selection_path", type=str, default=None)
 
     args = parser.parse_args()
     export_from_run(
@@ -126,6 +142,7 @@ def main() -> None:
         num_worker=args.num_worker,
         batch_size=args.batch_size,
         num_samples=args.num_samples,
+        selected_window_indices=_load_selected_window_indices(args.selection_path),
     )
 
 

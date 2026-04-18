@@ -104,6 +104,7 @@ class MethodArtifact:
     samples: np.ndarray
     mu_x: np.ndarray
     sigma_x: np.ndarray
+    window_index: np.ndarray
 
 
 @dataclass
@@ -224,6 +225,7 @@ def _load_artifacts(methods: Sequence[MethodSpec], atol: float = 1e-5) -> List[M
     ref_y = None
     ref_mu_x = None
     ref_sigma_x = None
+    ref_window_index = None
 
     for spec in methods:
         if not os.path.isfile(spec.path):
@@ -238,17 +240,27 @@ def _load_artifacts(methods: Sequence[MethodSpec], atol: float = 1e-5) -> List[M
         samples = _as_sample_tensor(data["samples"], "samples")
         mu_x = _as_stats_tensor(data["mu_X"], horizon=y.shape[1], name="mu_X")
         sigma_x = _as_stats_tensor(data["sigma_X"], horizon=y.shape[1], name="sigma_X")
+        if "window_index" in data.files:
+            window_index = np.asarray(data["window_index"], dtype=np.int64).reshape(-1)
+        else:
+            window_index = np.arange(y.shape[0], dtype=np.int64)
 
         if samples.shape[:3] != y.shape:
             raise ValueError(
                 "Shape mismatch for %s: Y%s vs samples%s."
                 % (spec.display_name, y.shape, samples.shape)
             )
+        if window_index.shape[0] != y.shape[0]:
+            raise ValueError(
+                "Shape mismatch for %s: window_index%s vs Y%s."
+                % (spec.display_name, window_index.shape, y.shape)
+            )
 
         if ref_y is None:
             ref_y = y
             ref_mu_x = mu_x
             ref_sigma_x = sigma_x
+            ref_window_index = window_index
         else:
             if not np.allclose(y, ref_y, atol=atol, rtol=0.0):
                 raise ValueError(
@@ -266,6 +278,11 @@ def _load_artifacts(methods: Sequence[MethodSpec], atol: float = 1e-5) -> List[M
                     "Artifact `%s` does not share the same history scales as the reference artifact."
                     % spec.path
                 )
+            if not np.array_equal(window_index, ref_window_index):
+                raise ValueError(
+                    "Artifact `%s` does not share the same exported window indices as the reference artifact."
+                    % spec.path
+                )
 
         artifacts.append(
             MethodArtifact(
@@ -274,10 +291,74 @@ def _load_artifacts(methods: Sequence[MethodSpec], atol: float = 1e-5) -> List[M
                 samples=samples,
                 mu_x=mu_x,
                 sigma_x=sigma_x,
+                window_index=window_index,
             )
         )
 
     return artifacts
+
+
+def _load_selected_pairs_from_file(
+    selection_path: str,
+    reference: MethodArtifact,
+) -> SelectedPairs:
+    with open(selection_path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+
+    exported_window_index = np.asarray(reference.window_index, dtype=np.int64).reshape(-1)
+    row_lookup = {int(idx): pos for pos, idx in enumerate(exported_window_index.tolist())}
+
+    def _extract_bin(bin_name: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        cfg = payload.get(bin_name, {})
+        window_idx = np.asarray(cfg.get("window_idx", []), dtype=np.int64).reshape(-1)
+        dim_idx = np.asarray(cfg.get("dim_idx", []), dtype=np.int64).reshape(-1)
+        drift_scores = np.asarray(cfg.get("drift_scores", []), dtype=np.float32).reshape(-1)
+        if window_idx.shape != dim_idx.shape or window_idx.shape != drift_scores.shape:
+            raise ValueError("Selection bin `%s` has inconsistent shapes." % bin_name)
+        if window_idx.size == 0:
+            raise ValueError("Selection bin `%s` is empty." % bin_name)
+
+        local_window_idx = []
+        local_dim_idx = []
+        local_drift_scores = []
+        for orig_idx, dim, drift in zip(window_idx.tolist(), dim_idx.tolist(), drift_scores.tolist()):
+            if int(orig_idx) not in row_lookup:
+                raise KeyError(
+                    "Selection references window %d, but it is missing from exported artifacts."
+                    % int(orig_idx)
+                )
+            local_window_idx.append(row_lookup[int(orig_idx)])
+            local_dim_idx.append(int(dim))
+            local_drift_scores.append(float(drift))
+        return (
+            np.asarray(local_window_idx, dtype=np.int64),
+            np.asarray(local_dim_idx, dtype=np.int64),
+            np.asarray(local_drift_scores, dtype=np.float32),
+        )
+
+    low_window_idx, low_dim_idx, low_drift = _extract_bin("low_pairs")
+    mid_window_idx, mid_dim_idx, mid_drift = _extract_bin("mid_pairs")
+    high_window_idx, high_dim_idx, high_drift = _extract_bin("high_pairs")
+
+    low_size = low_window_idx.shape[0]
+    mid_size = mid_window_idx.shape[0]
+    high_size = high_window_idx.shape[0]
+
+    return SelectedPairs(
+        window_idx=np.concatenate([low_window_idx, mid_window_idx, high_window_idx], axis=0),
+        dim_idx=np.concatenate([low_dim_idx, mid_dim_idx, high_dim_idx], axis=0),
+        drift_scores=np.concatenate([low_drift, mid_drift, high_drift], axis=0),
+        selected_dims=np.asarray(payload.get("selected_dims", []), dtype=np.int64).reshape(-1),
+        per_dim_tail_score=np.asarray(
+            payload.get("per_dim_tail_score", []), dtype=np.float32
+        ).reshape(-1),
+        high_pair_indices=np.arange(low_size + mid_size, low_size + mid_size + high_size, dtype=np.int64),
+        low_pair_indices=np.arange(0, low_size, dtype=np.int64),
+        mid_pair_indices=np.arange(low_size, low_size + mid_size, dtype=np.int64),
+        high_drift_threshold=float(payload.get("high_drift_threshold", 0.0)),
+        low_drift_threshold=float(payload.get("low_drift_threshold", 0.0)),
+        mid_drift_threshold=float(payload.get("mid_drift_threshold", 0.0)),
+    )
 
 
 def _compute_drift_scores(
@@ -518,7 +599,7 @@ def _kde_thresholds(z: np.ndarray, masses: Sequence[float]) -> List[float]:
 def _draw_density_contours(ax: plt.Axes, x: np.ndarray, y: np.ndarray, color: str) -> None:
     if gaussian_kde is None:
         return
-    if x.size < 32:
+    if x.size < 16:
         return
     try:
         values = np.vstack([x, y])
@@ -765,6 +846,7 @@ def run_analysis(
     manifest_path: str,
     output_path: str,
     metadata_path: Optional[str],
+    selection_path: Optional[str],
     dataset_name_override: Optional[str],
     num_variables: int,
     variable_tail_quantile: float,
@@ -783,18 +865,21 @@ def run_analysis(
 
     artifacts = _load_artifacts(methods)
     reference = artifacts[0]
-    selected = _select_pairs(
-        y=reference.y,
-        mu_x=reference.mu_x,
-        sigma_x=reference.sigma_x,
-        num_variables=num_variables,
-        variable_tail_quantile=variable_tail_quantile,
-        high_drift_ratio=high_drift_ratio,
-        low_drift_quantile=low_drift_quantile,
-        high_drift_quantile=high_drift_quantile,
-        eps=eps,
-        feature_dims=feature_dims,
-    )
+    if selection_path is not None:
+        selected = _load_selected_pairs_from_file(selection_path=selection_path, reference=reference)
+    else:
+        selected = _select_pairs(
+            y=reference.y,
+            mu_x=reference.mu_x,
+            sigma_x=reference.sigma_x,
+            num_variables=num_variables,
+            variable_tail_quantile=variable_tail_quantile,
+            high_drift_ratio=high_drift_ratio,
+            low_drift_quantile=low_drift_quantile,
+            high_drift_quantile=high_drift_quantile,
+            eps=eps,
+            feature_dims=feature_dims,
+        )
 
     scores = []
     for artifact in artifacts:
@@ -864,6 +949,7 @@ def main() -> None:
     parser.add_argument("--manifest_path", type=str, required=True)
     parser.add_argument("--output_path", type=str, required=True)
     parser.add_argument("--metadata_path", type=str, default=None)
+    parser.add_argument("--selection_path", type=str, default=None)
     parser.add_argument("--dataset_name", type=str, default=None)
     parser.add_argument("--num_variables", type=int, default=10)
     parser.add_argument("--variable_tail_quantile", type=float, default=0.90)
@@ -880,6 +966,7 @@ def main() -> None:
         manifest_path=args.manifest_path,
         output_path=args.output_path,
         metadata_path=args.metadata_path,
+        selection_path=args.selection_path,
         dataset_name_override=args.dataset_name,
         num_variables=args.num_variables,
         variable_tail_quantile=args.variable_tail_quantile,

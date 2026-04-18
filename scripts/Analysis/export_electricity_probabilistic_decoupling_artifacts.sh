@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-export PYTHONPATH=./
+export PYTHONPATH=./:/notebooks/pytorchtimseries
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,6 +21,7 @@ NUM_SAMPLES="${NUM_SAMPLES:-100}"
 BATCH_SIZE="${BATCH_SIZE:-}"
 OUTPUT_DIR="${OUTPUT_DIR:-./results/analysis/Electricity/probabilistic_decoupling}"
 MANIFEST_PATH="${MANIFEST_PATH:-${OUTPUT_DIR}/electricity_probabilistic_decoupling_manifest.json}"
+SELECTION_PATH="${SELECTION_PATH:-}"
 
 TIMEGRAD_BATCH_SIZE="${TIMEGRAD_BATCH_SIZE:-${BATCH_SIZE}}"
 CSDI_BATCH_SIZE="${CSDI_BATCH_SIZE:-${BATCH_SIZE}}"
@@ -81,6 +82,9 @@ export_one() {
 
     if [ -n "${batch_size}" ]; then
         extra_args+=(--batch_size "${batch_size}")
+    fi
+    if [ -n "${SELECTION_PATH}" ]; then
+        extra_args+=(--selection_path "${SELECTION_PATH}")
     fi
 
     python3 -u ./src/analysis/export_forecast_samples_from_run.py \

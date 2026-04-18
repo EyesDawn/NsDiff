@@ -6,7 +6,7 @@ import json
 import os
 import random
 import time
-from typing import Dict, List, Optional, Tuple, Type, Union
+from typing import Dict, List, Optional, Sequence, Tuple, Type, Union
 
 import numpy as np
 import pandas as pd
@@ -247,6 +247,7 @@ class ProbForecastExp(ForecastExp):
         use_origin_scale: bool = True,
         eps: float = 1e-6,
         max_windows: Optional[int] = None,
+        selected_window_indices: Optional[Sequence[int]] = None,
         run_dir_override: Optional[str] = None,
         return_result: bool = False,
     ) -> Optional[Dict[str, np.ndarray]]:
@@ -309,9 +310,92 @@ class ProbForecastExp(ForecastExp):
         samples_all = []
         mu_xs = []
         sigma_xs = []
+        window_indices_all = []
 
         collected = 0
-        with tqdm(total=len(self.test_loader.dataset)) as progress_bar:
+        dataset_size = len(self.test_loader.dataset)
+        selected_positions = None
+        if selected_window_indices is not None:
+            selected_positions = np.asarray(selected_window_indices, dtype=np.int64).reshape(-1)
+            if selected_positions.size == 0:
+                raise ValueError("selected_window_indices must not be empty when provided.")
+            selected_positions = np.unique(selected_positions)
+            if selected_positions[0] < 0 or selected_positions[-1] >= dataset_size:
+                raise IndexError(
+                    "selected_window_indices must lie within [0, %d), got [%d, %d]."
+                    % (dataset_size, int(selected_positions[0]), int(selected_positions[-1]))
+                )
+        progress_total = (
+            int(selected_positions.shape[0]) if selected_positions is not None else dataset_size
+        )
+        current_offset = 0
+
+        pending_batches = None
+        pending_window_indices = []
+        pending_count = 0
+
+        if selected_positions is not None:
+            pending_batches = {
+                "batch_x": [],
+                "batch_y": [],
+                "origin_x": [],
+                "origin_y": [],
+                "batch_x_date_enc": [],
+                "batch_y_date_enc": [],
+            }
+
+        def _flush_pending() -> int:
+            nonlocal pending_count
+            if pending_batches is None or pending_count == 0:
+                return 0
+
+            batch_x = torch.cat(pending_batches["batch_x"], dim=0).to(self.device).float()
+            batch_y = torch.cat(pending_batches["batch_y"], dim=0).to(self.device).float()
+            origin_x = torch.cat(pending_batches["origin_x"], dim=0).to(self.device).float()
+            origin_y = torch.cat(pending_batches["origin_y"], dim=0).to(self.device).float()
+            batch_x_date_enc = (
+                torch.cat(pending_batches["batch_x_date_enc"], dim=0).to(self.device).float()
+            )
+            batch_y_date_enc = (
+                torch.cat(pending_batches["batch_y_date_enc"], dim=0).to(self.device).float()
+            )
+            exported_window_indices = np.concatenate(pending_window_indices, axis=0).astype(
+                np.int64, copy=False
+            )
+
+            preds, _ = self._process_val_batch(
+                batch_x, batch_y, batch_x_date_enc, batch_y_date_enc
+            )
+            if preds.ndim != 4:
+                raise ValueError(
+                    "Expected probabilistic predictions with shape [B, P, D, S], "
+                    f"got {tuple(preds.shape)}."
+                )
+
+            x_ref = origin_x if use_origin_scale else batch_x
+            y_ref = origin_y if use_origin_scale else batch_y
+            if use_origin_scale:
+                preds = self._inverse_transform_last_dim(preds)
+
+            mu_x = x_ref.mean(dim=1, keepdim=True)
+            sigma_x = x_ref.std(dim=1, keepdim=True).clamp_min(eps)
+
+            ys.append(y_ref.detach().cpu())
+            samples_all.append(preds.detach().cpu())
+            mu_xs.append(mu_x.detach().cpu())
+            sigma_xs.append(sigma_x.detach().cpu())
+            window_indices_all.append(
+                torch.as_tensor(exported_window_indices, dtype=torch.long).cpu()
+            )
+
+            for key in pending_batches:
+                pending_batches[key].clear()
+            pending_window_indices.clear()
+            flushed = int(exported_window_indices.shape[0])
+            pending_count = 0
+            return flushed
+
+        with tqdm(total=progress_total) as progress_bar:
             for (
                 batch_x,
                 batch_y,
@@ -320,6 +404,51 @@ class ProbForecastExp(ForecastExp):
                 batch_x_date_enc,
                 batch_y_date_enc,
             ) in self.test_loader:
+                batch_start = current_offset
+                batch_size = batch_x.shape[0]
+                batch_end = batch_start + batch_size
+                current_offset = batch_end
+
+                if selected_positions is not None:
+                    left = int(np.searchsorted(selected_positions, batch_start, side="left"))
+                    right = int(np.searchsorted(selected_positions, batch_end, side="left"))
+                    if right <= left:
+                        continue
+                    selected_in_batch = selected_positions[left:right]
+                    local_indices_np = selected_in_batch - batch_start
+                    local_indices = torch.as_tensor(
+                        local_indices_np,
+                        dtype=torch.long,
+                        device=batch_x.device,
+                    )
+                    batch_x = batch_x.index_select(0, local_indices)
+                    batch_y = batch_y.index_select(0, local_indices)
+                    origin_x = origin_x.index_select(0, local_indices)
+                    origin_y = origin_y.index_select(0, local_indices)
+                    batch_x_date_enc = batch_x_date_enc.index_select(0, local_indices)
+                    batch_y_date_enc = batch_y_date_enc.index_select(0, local_indices)
+                    pending_batches["batch_x"].append(batch_x)
+                    pending_batches["batch_y"].append(batch_y)
+                    pending_batches["origin_x"].append(origin_x)
+                    pending_batches["origin_y"].append(origin_y)
+                    pending_batches["batch_x_date_enc"].append(batch_x_date_enc)
+                    pending_batches["batch_y_date_enc"].append(batch_y_date_enc)
+                    pending_window_indices.append(selected_in_batch.astype(np.int64, copy=False))
+                    pending_count += int(selected_in_batch.shape[0])
+
+                    should_flush = pending_count >= int(self.batch_size)
+                    if max_windows is not None and collected + pending_count >= max_windows:
+                        should_flush = True
+                    if should_flush:
+                        exported_batch_size = _flush_pending()
+                        collected += exported_batch_size
+                        progress_bar.update(exported_batch_size)
+                        if max_windows is not None and collected >= max_windows:
+                            break
+                    continue
+
+                exported_window_indices = np.arange(batch_start, batch_end, dtype=np.int64)
+
                 batch_x = batch_x.to(self.device).float()
                 batch_y = batch_y.to(self.device).float()
                 origin_x = origin_x.to(self.device).float()
@@ -348,12 +477,20 @@ class ProbForecastExp(ForecastExp):
                 samples_all.append(preds.detach().cpu())
                 mu_xs.append(mu_x.detach().cpu())
                 sigma_xs.append(sigma_x.detach().cpu())
+                window_indices_all.append(
+                    torch.as_tensor(exported_window_indices, dtype=torch.long).cpu()
+                )
 
-                batch_size = batch_x.shape[0]
-                collected += batch_size
-                progress_bar.update(batch_size)
+                exported_batch_size = batch_x.shape[0]
+                collected += exported_batch_size
+                progress_bar.update(exported_batch_size)
                 if max_windows is not None and collected >= max_windows:
                     break
+
+            if selected_positions is not None and (max_windows is None or collected < max_windows):
+                exported_batch_size = _flush_pending()
+                collected += exported_batch_size
+                progress_bar.update(exported_batch_size)
 
         def _cat_to_numpy(tensor_list):
             return torch.cat(tensor_list, dim=0).numpy() if tensor_list else None
@@ -362,6 +499,7 @@ class ProbForecastExp(ForecastExp):
         samples_np = _cat_to_numpy(samples_all)
         mu_x_all = _cat_to_numpy(mu_xs)
         sigma_x_all = _cat_to_numpy(sigma_xs)
+        window_index_all = _cat_to_numpy(window_indices_all)
 
         if max_windows is not None and y_all is not None:
             limit = min(int(max_windows), y_all.shape[0])
@@ -369,12 +507,14 @@ class ProbForecastExp(ForecastExp):
             samples_np = samples_np[:limit]
             mu_x_all = mu_x_all[:limit]
             sigma_x_all = sigma_x_all[:limit]
+            window_index_all = window_index_all[:limit]
 
         result = {
             "Y": y_all,
             "samples": samples_np,
             "mu_X": mu_x_all,
             "sigma_X": sigma_x_all,
+            "window_index": window_index_all,
         }
 
         save_dir = os.path.dirname(save_path)
@@ -386,6 +526,7 @@ class ProbForecastExp(ForecastExp):
         print(f"Y shape        : {None if y_all is None else y_all.shape}")
         print(f"samples shape  : {None if samples_np is None else samples_np.shape}")
         print(f"mu_X / sigma_X : {None if mu_x_all is None else mu_x_all.shape}")
+        print(f"window_index   : {None if window_index_all is None else window_index_all.shape}")
 
         if return_result:
             return result

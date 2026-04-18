@@ -8,6 +8,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-./results/analysis/Electricity/probabilistic_decouplin
 MANIFEST_PATH="${MANIFEST_PATH:-${OUTPUT_DIR}/electricity_probabilistic_decoupling_manifest.json}"
 OUTPUT_PATH="${OUTPUT_PATH:-${OUTPUT_DIR}/electricity_probabilistic_decoupling_map.pdf}"
 METADATA_PATH="${METADATA_PATH:-${OUTPUT_DIR}/electricity_probabilistic_decoupling_map.json}"
+SELECTION_PATH="${SELECTION_PATH:-}"
 DATASET_NAME="${DATASET_NAME:-Electricity}"
 NUM_VARIABLES="${NUM_VARIABLES:-10}"
 VARIABLE_TAIL_QUANTILE="${VARIABLE_TAIL_QUANTILE:-0.9}"
@@ -22,6 +23,11 @@ if [ ! -f "${MANIFEST_PATH}" ]; then
     exit 1
 fi
 
+extra_args=()
+if [ -n "${SELECTION_PATH}" ]; then
+    extra_args+=(--selection_path "${SELECTION_PATH}")
+fi
+
 python3 -u ./src/analysis/probabilistic_decoupling_map.py \
     --manifest_path "${MANIFEST_PATH}" \
     --output_path "${OUTPUT_PATH}" \
@@ -32,4 +38,5 @@ python3 -u ./src/analysis/probabilistic_decoupling_map.py \
     --high_drift_ratio "${HIGH_DRIFT_RATIO}" \
     --low_drift_quantile "${LOW_DRIFT_QUANTILE}" \
     --high_drift_quantile "${HIGH_DRIFT_QUANTILE}" \
-    --energy_batch_size "${ENERGY_BATCH_SIZE}"
+    --energy_batch_size "${ENERGY_BATCH_SIZE}" \
+    "${extra_args[@]}"

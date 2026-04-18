@@ -635,7 +635,7 @@ $$
 
 ---
 
-## 纵轴：Canonical residual distribution error
+## 纵轴：Normalized residual distribution error
 
 对每条预测 sample 自己做 canonicalization：
 $$

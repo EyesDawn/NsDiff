@@ -79,6 +79,8 @@ SOURCE_TARGET_CLASS_REGISTRY: dict[str, str] = {
     "NsDiff": "src.experiments.NsDiff:NsDiffForecast",
     "iReflow": "src.experiments.iReflow:iReflowExp",
     "PDN-Flow": "src.experiments.iReflow:iReflowExp",
+    "F": "src.experiments.pretrain_f:FForecast",
+    "G": "src.experiments.pretrain_g:GForecast",
 }
 
 
@@ -715,9 +717,12 @@ def _plot_endpoint_distance_bars(
 @dataclass
 class SourceTargetMethodSpec:
     name: str
-    run_dir: str
     space: str
     display_name: str
+    run_dir: str | None = None
+    config_run_dir: str | None = None
+    mu_run_dir: str | None = None
+    sigma_run_dir: str | None = None
 
 
 @dataclass
@@ -780,19 +785,49 @@ def _load_source_target_manifest(manifest_path: str) -> list[SourceTargetDataset
             if "name" not in method_cfg:
                 raise ValueError(f"Dataset `{dataset_name}` has a method entry without `name`.")
             raw_name = str(method_cfg["name"])
-            display_name = str(method_cfg.get("display_name", _normalize_source_target_method_name(raw_name)))
-            run_dir = str(method_cfg.get("run_dir", "")).strip()
-            if not run_dir:
-                raise ValueError(
-                    f"Dataset `{dataset_name}` / method `{display_name}` is missing `run_dir`."
-                )
+            display_name = str(
+                method_cfg.get("display_name", _normalize_source_target_method_name(raw_name))
+            )
+            run_dir = str(method_cfg.get("run_dir", "")).strip() or None
+            config_run_dir = str(method_cfg.get("config_run_dir", "")).strip() or None
+            mu_run_dir = str(method_cfg.get("mu_run_dir", "")).strip() or None
+            sigma_run_dir = str(method_cfg.get("sigma_run_dir", "")).strip() or None
             space = str(method_cfg.get("space", _default_source_target_space(display_name))).lower()
+
+            if display_name == "PDN-Flow":
+                if run_dir is None:
+                    raise ValueError(
+                        f"Dataset `{dataset_name}` / method `{display_name}` is missing `run_dir`."
+                    )
+            elif display_name == "TimeGrad":
+                if config_run_dir is None and run_dir is None:
+                    raise ValueError(
+                        f"Dataset `{dataset_name}` / method `{display_name}` must provide "
+                        "`config_run_dir` (or legacy `run_dir`)."
+                    )
+            elif display_name == "TMDM":
+                if mu_run_dir is None and run_dir is None:
+                    raise ValueError(
+                        f"Dataset `{dataset_name}` / method `{display_name}` must provide "
+                        "`mu_run_dir` (or legacy `run_dir`)."
+                    )
+            elif display_name == "NsDiff":
+                has_new_paths = mu_run_dir is not None and sigma_run_dir is not None
+                if not has_new_paths and run_dir is None:
+                    raise ValueError(
+                        f"Dataset `{dataset_name}` / method `{display_name}` must provide "
+                        "`mu_run_dir` + `sigma_run_dir` (or legacy `run_dir`)."
+                    )
+
             method_specs.append(
                 SourceTargetMethodSpec(
                     name=raw_name,
-                    run_dir=run_dir,
                     space=space,
                     display_name=display_name,
+                    run_dir=run_dir,
+                    config_run_dir=config_run_dir,
+                    mu_run_dir=mu_run_dir,
+                    sigma_run_dir=sigma_run_dir,
                 )
             )
 
@@ -958,6 +993,51 @@ def _transform_gaussian_to_origin_space(
     return mean_origin, std_origin
 
 
+def _transform_mean_to_origin_space(
+    exp: Any,
+    mean_scaled: torch.Tensor,
+) -> torch.Tensor:
+    if not hasattr(exp, "_get_scaler_mean_std"):
+        return mean_scaled
+    scaler_mean, scaler_std = exp._get_scaler_mean_std(
+        dtype=mean_scaled.dtype,
+        device=mean_scaled.device,
+    )
+    if scaler_mean is None or scaler_std is None:
+        return mean_scaled
+    feature_slice = _analysis_feature_slice(exp)
+    scaler_mean = scaler_mean[:, :, feature_slice]
+    scaler_std = scaler_std[:, :, feature_slice]
+    return mean_scaled * scaler_std + scaler_mean
+
+
+def _predict_mu_from_f_model(
+    exp: Any,
+    batch_x: torch.Tensor,
+    batch_x_date_enc: torch.Tensor,
+    batch_y_date_enc: torch.Tensor,
+) -> torch.Tensor:
+    label_len = getattr(exp, "label_len", exp.windows // 2)
+    batch_y_mark_input = torch.concat(
+        [batch_x_date_enc[:, -label_len:, :], batch_y_date_enc],
+        dim=1,
+    )
+    dec_inp_pred = torch.zeros(
+        [batch_x.size(0), exp.pred_len, exp.dataset.num_features],
+        device=batch_x.device,
+    )
+    dec_inp_label = batch_x[:, -label_len:, :]
+    dec_inp = torch.cat([dec_inp_label, dec_inp_pred], dim=1)
+    source_mean, _ = exp.model(
+        batch_x,
+        batch_x_date_enc,
+        dec_inp,
+        batch_y_mark_input,
+    )
+    feature_slice = _analysis_feature_slice(exp)
+    return source_mean[:, :, feature_slice]
+
+
 def _prepare_source_target_batch(
     exp: Any,
     display_name: str,
@@ -1120,16 +1200,88 @@ def _collect_source_target_reservoir(
     num_worker: int | None,
     num_samples: int | None,
 ) -> tuple[SourceTargetReservoir, str]:
-    load_model = method_spec.display_name != "TimeGrad"
-    exp, model_type = _setup_source_target_experiment(
-        run_dir=method_spec.run_dir,
-        seed=seed,
-        device=device,
-        batch_size=batch_size,
-        num_worker=num_worker,
-        num_samples=num_samples,
-        load_model=load_model,
-    )
+    legacy_run_dir = method_spec.run_dir
+    exp = None
+    aux_exp_mu = None
+    aux_exp_sigma = None
+
+    if method_spec.display_name == "PDN-Flow":
+        if method_spec.run_dir is None:
+            raise ValueError("PDN-Flow requires `run_dir`.")
+        exp, model_type = _setup_source_target_experiment(
+            run_dir=method_spec.run_dir,
+            seed=seed,
+            device=device,
+            batch_size=batch_size,
+            num_worker=num_worker,
+            num_samples=num_samples,
+            load_model=True,
+        )
+    elif method_spec.display_name == "TimeGrad" and method_spec.config_run_dir is not None:
+        exp, _ = _setup_source_target_experiment(
+            run_dir=method_spec.config_run_dir,
+            seed=seed,
+            device=device,
+            batch_size=batch_size,
+            num_worker=num_worker,
+            num_samples=num_samples,
+            load_model=False,
+        )
+        model_type = "TimeGrad"
+    elif method_spec.display_name == "TMDM" and method_spec.mu_run_dir is not None:
+        exp, _ = _setup_source_target_experiment(
+            run_dir=method_spec.mu_run_dir,
+            seed=seed,
+            device=device,
+            batch_size=batch_size,
+            num_worker=num_worker,
+            num_samples=num_samples,
+            load_model=True,
+        )
+        model_type = "TMDM"
+    elif (
+        method_spec.display_name == "NsDiff"
+        and method_spec.mu_run_dir is not None
+        and method_spec.sigma_run_dir is not None
+    ):
+        exp, _ = _setup_source_target_experiment(
+            run_dir=method_spec.mu_run_dir,
+            seed=seed,
+            device=device,
+            batch_size=batch_size,
+            num_worker=num_worker,
+            num_samples=num_samples,
+            load_model=True,
+        )
+        aux_exp_sigma, _ = _setup_source_target_experiment(
+            run_dir=method_spec.sigma_run_dir,
+            seed=seed,
+            device=device,
+            batch_size=batch_size,
+            num_worker=num_worker,
+            num_samples=num_samples,
+            load_model=True,
+        )
+        model_type = "NsDiff"
+    elif legacy_run_dir is not None:
+        load_model = method_spec.display_name != "TimeGrad"
+        exp, model_type = _setup_source_target_experiment(
+            run_dir=legacy_run_dir,
+            seed=seed,
+            device=device,
+            batch_size=batch_size,
+            num_worker=num_worker,
+            num_samples=num_samples,
+            load_model=load_model,
+        )
+    else:
+        raise ValueError(
+            f"Unsupported source-target method specification for `{method_spec.display_name}`."
+        )
+
+    if exp is None:
+        raise RuntimeError("Source-target experiment setup failed.")
+
     rng = np.random.default_rng(seed)
     reservoir_payload: dict[str, np.ndarray] | None = None
     reservoir_keys: np.ndarray | None = None
@@ -1151,17 +1303,80 @@ def _collect_source_target_reservoir(
             batch_x_date_enc = batch_x_date_enc.to(exp.device).float()
             batch_y_date_enc = batch_y_date_enc.to(exp.device).float()
 
-            target, source_mean, source_std = _prepare_source_target_batch(
-                exp=exp,
-                display_name=method_spec.display_name,
-                space=method_spec.space,
-                batch_x=batch_x,
-                batch_y=batch_y,
-                origin_y=origin_y,
-                batch_x_date_enc=batch_x_date_enc,
-                batch_y_date_enc=batch_y_date_enc,
-                eps=eps,
-            )
+            if method_spec.display_name == "TimeGrad" and method_spec.config_run_dir is not None:
+                feature_slice = _analysis_feature_slice(exp)
+                if method_spec.space == "origin":
+                    target = origin_y[:, :, feature_slice]
+                elif method_spec.space == "scaled":
+                    target = batch_y[:, :, feature_slice]
+                else:
+                    raise ValueError(
+                        f"Unsupported comparison space for TimeGrad: {method_spec.space}"
+                    )
+                source_mean = torch.zeros_like(target)
+                source_std = torch.ones_like(target)
+            elif method_spec.display_name == "TMDM" and method_spec.mu_run_dir is not None:
+                source_mean = _predict_mu_from_f_model(
+                    exp=exp,
+                    batch_x=batch_x,
+                    batch_x_date_enc=batch_x_date_enc,
+                    batch_y_date_enc=batch_y_date_enc,
+                )
+                source_std = torch.ones_like(source_mean)
+                if method_spec.space == "origin":
+                    feature_slice = _analysis_feature_slice(exp)
+                    target = origin_y[:, :, feature_slice]
+                    source_mean = _transform_mean_to_origin_space(exp=exp, mean_scaled=source_mean)
+                elif method_spec.space == "scaled":
+                    feature_slice = _analysis_feature_slice(exp)
+                    target = batch_y[:, :, feature_slice]
+                else:
+                    raise ValueError(
+                        f"Unsupported comparison space for TMDM: {method_spec.space}"
+                    )
+            elif (
+                method_spec.display_name == "NsDiff"
+                and method_spec.mu_run_dir is not None
+                and method_spec.sigma_run_dir is not None
+            ):
+                if aux_exp_sigma is None:
+                    raise RuntimeError("NsDiff requires an initialized sigma experiment.")
+                feature_slice = _analysis_feature_slice(exp)
+                source_mean = _predict_mu_from_f_model(
+                    exp=exp,
+                    batch_x=batch_x,
+                    batch_x_date_enc=batch_x_date_enc,
+                    batch_y_date_enc=batch_y_date_enc,
+                )
+                source_std = torch.clamp_min(
+                    aux_exp_sigma.model(batch_x)[:, :, feature_slice],
+                    eps,
+                )
+                if method_spec.space == "origin":
+                    target = origin_y[:, :, feature_slice]
+                    source_mean, source_std = _transform_gaussian_to_origin_space(
+                        exp=exp,
+                        mean_scaled=source_mean,
+                        std_scaled=source_std,
+                    )
+                elif method_spec.space == "scaled":
+                    target = batch_y[:, :, feature_slice]
+                else:
+                    raise ValueError(
+                        f"Unsupported comparison space for NsDiff: {method_spec.space}"
+                    )
+            else:
+                target, source_mean, source_std = _prepare_source_target_batch(
+                    exp=exp,
+                    display_name=method_spec.display_name,
+                    space=method_spec.space,
+                    batch_x=batch_x,
+                    batch_y=batch_y,
+                    origin_y=origin_y,
+                    batch_x_date_enc=batch_x_date_enc,
+                    batch_y_date_enc=batch_y_date_enc,
+                    eps=eps,
+                )
             total_positions += int(target.numel())
             reservoir_payload, reservoir_keys = _reservoir_update(
                 payload=reservoir_payload,
@@ -1378,7 +1593,22 @@ def plot_source_target_wasserstein_bars(
             )
             method_results[method_spec.display_name] = {
                 "model_type": model_type,
-                "run_dir": os.path.abspath(method_spec.run_dir),
+                "run_dir": None if method_spec.run_dir is None else os.path.abspath(method_spec.run_dir),
+                "config_run_dir": (
+                    None
+                    if method_spec.config_run_dir is None
+                    else os.path.abspath(method_spec.config_run_dir)
+                ),
+                "mu_run_dir": (
+                    None
+                    if method_spec.mu_run_dir is None
+                    else os.path.abspath(method_spec.mu_run_dir)
+                ),
+                "sigma_run_dir": (
+                    None
+                    if method_spec.sigma_run_dir is None
+                    else os.path.abspath(method_spec.sigma_run_dir)
+                ),
                 "space": method_spec.space,
                 "w1_mean": metric["mean"],
                 "w1_std": metric["std"],

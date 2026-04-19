@@ -26,8 +26,7 @@ fi
 mkdir -p "${OUTPUT_DIR}"
 
 CMD=(
-    python -u ./src/analysis/pca_transport_path.py
-    --figure_type source_target_bars
+    python -u ./src/analysis/source_target_w1.py
     --manifest_path "${MANIFEST_PATH}"
     --output_path "${OUTPUT_PATH}"
     --metadata_path "${METADATA_PATH}"

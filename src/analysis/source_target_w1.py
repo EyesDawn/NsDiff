@@ -131,6 +131,13 @@ class SourceTargetReservoir:
     total_windows: int
 
 
+@dataclass
+class SourceTargetExperimentHandle:
+    exp: Any
+    model_type: str
+    model_loaded: bool
+
+
 def _normalize_source_target_method_name(name: str) -> str:
     return SOURCE_TARGET_DISPLAY_ALIASES.get(name, name)
 
@@ -320,6 +327,15 @@ def _build_experiment_from_run_dir(
     return exp, model_type
 
 
+def _set_experiment_eval_mode(exp: Any) -> None:
+    if hasattr(exp, "model"):
+        exp.model.eval()
+    if hasattr(exp, "cond_pred_model"):
+        exp.cond_pred_model.eval()
+    if hasattr(exp, "cond_pred_model_g"):
+        exp.cond_pred_model_g.eval()
+
+
 def _setup_source_target_experiment(
     run_dir: str,
     seed: int,
@@ -358,13 +374,59 @@ def _setup_source_target_experiment(
             exp.test_steps = len(exp.test_loader.dataset)
     if load_model:
         exp._load_best_model()
-        if hasattr(exp, "model"):
-            exp.model.eval()
-        if hasattr(exp, "cond_pred_model"):
-            exp.cond_pred_model.eval()
-        if hasattr(exp, "cond_pred_model_g"):
-            exp.cond_pred_model_g.eval()
+        _set_experiment_eval_mode(exp)
     return exp, model_type
+
+
+def _get_or_create_source_target_experiment(
+    run_dir: str,
+    seed: int,
+    device: str | None,
+    batch_size: int | None,
+    num_worker: int | None,
+    num_samples: int | None,
+    load_model: bool,
+    cache: dict[tuple[str, str | None, int | None, int | None, int | None], SourceTargetExperimentHandle]
+    | None,
+) -> tuple[Any, str]:
+    resolved_run_dir = os.path.abspath(run_dir)
+    cache_key = (resolved_run_dir, device, batch_size, num_worker, num_samples)
+
+    if cache is None:
+        return _setup_source_target_experiment(
+            run_dir=resolved_run_dir,
+            seed=seed,
+            device=device,
+            batch_size=batch_size,
+            num_worker=num_worker,
+            num_samples=num_samples,
+            load_model=load_model,
+        )
+
+    handle = cache.get(cache_key)
+    if handle is None:
+        exp, model_type = _setup_source_target_experiment(
+            run_dir=resolved_run_dir,
+            seed=seed,
+            device=device,
+            batch_size=batch_size,
+            num_worker=num_worker,
+            num_samples=num_samples,
+            load_model=load_model,
+        )
+        cache[cache_key] = SourceTargetExperimentHandle(
+            exp=exp,
+            model_type=model_type,
+            model_loaded=load_model,
+        )
+        return exp, model_type
+
+    if load_model and not handle.model_loaded:
+        handle.exp._load_best_model()
+        _set_experiment_eval_mode(handle.exp)
+        handle.model_loaded = True
+
+    return handle.exp, handle.model_type
 
 
 def _analysis_feature_slice(exp: Any) -> slice:
@@ -640,6 +702,10 @@ def _collect_source_target_reservoir(
     batch_size: int | None,
     num_worker: int | None,
     num_samples: int | None,
+    experiment_cache: dict[
+        tuple[str, str | None, int | None, int | None, int | None], SourceTargetExperimentHandle
+    ]
+    | None = None,
 ) -> tuple[SourceTargetReservoir, str]:
     legacy_run_dir = method_spec.run_dir
     exp = None
@@ -648,7 +714,7 @@ def _collect_source_target_reservoir(
     if method_spec.display_name == "PDN-Flow":
         if method_spec.run_dir is None:
             raise ValueError("PDN-Flow requires `run_dir`.")
-        exp, model_type = _setup_source_target_experiment(
+        exp, model_type = _get_or_create_source_target_experiment(
             run_dir=method_spec.run_dir,
             seed=seed,
             device=device,
@@ -656,9 +722,10 @@ def _collect_source_target_reservoir(
             num_worker=num_worker,
             num_samples=num_samples,
             load_model=True,
+            cache=experiment_cache,
         )
     elif method_spec.display_name == "TimeGrad" and method_spec.config_run_dir is not None:
-        exp, _ = _setup_source_target_experiment(
+        exp, _ = _get_or_create_source_target_experiment(
             run_dir=method_spec.config_run_dir,
             seed=seed,
             device=device,
@@ -666,10 +733,11 @@ def _collect_source_target_reservoir(
             num_worker=num_worker,
             num_samples=num_samples,
             load_model=False,
+            cache=experiment_cache,
         )
         model_type = "TimeGrad"
     elif method_spec.display_name == "TMDM" and method_spec.mu_run_dir is not None:
-        exp, _ = _setup_source_target_experiment(
+        exp, _ = _get_or_create_source_target_experiment(
             run_dir=method_spec.mu_run_dir,
             seed=seed,
             device=device,
@@ -677,6 +745,7 @@ def _collect_source_target_reservoir(
             num_worker=num_worker,
             num_samples=num_samples,
             load_model=True,
+            cache=experiment_cache,
         )
         model_type = "TMDM"
     elif (
@@ -684,7 +753,7 @@ def _collect_source_target_reservoir(
         and method_spec.mu_run_dir is not None
         and method_spec.sigma_run_dir is not None
     ):
-        exp, _ = _setup_source_target_experiment(
+        exp, _ = _get_or_create_source_target_experiment(
             run_dir=method_spec.mu_run_dir,
             seed=seed,
             device=device,
@@ -692,8 +761,9 @@ def _collect_source_target_reservoir(
             num_worker=num_worker,
             num_samples=num_samples,
             load_model=True,
+            cache=experiment_cache,
         )
-        aux_exp_sigma, _ = _setup_source_target_experiment(
+        aux_exp_sigma, _ = _get_or_create_source_target_experiment(
             run_dir=method_spec.sigma_run_dir,
             seed=seed,
             device=device,
@@ -701,11 +771,12 @@ def _collect_source_target_reservoir(
             num_worker=num_worker,
             num_samples=num_samples,
             load_model=True,
+            cache=experiment_cache,
         )
         model_type = "NsDiff"
     elif legacy_run_dir is not None:
         load_model = method_spec.display_name != "TimeGrad"
-        exp, model_type = _setup_source_target_experiment(
+        exp, model_type = _get_or_create_source_target_experiment(
             run_dir=legacy_run_dir,
             seed=seed,
             device=device,
@@ -713,6 +784,7 @@ def _collect_source_target_reservoir(
             num_worker=num_worker,
             num_samples=num_samples,
             load_model=load_model,
+            cache=experiment_cache,
         )
     else:
         raise ValueError(
@@ -1009,6 +1081,46 @@ def _save_source_target_metadata(
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
 
+def _summarize_result_for_stdout(result: dict[str, Any]) -> dict[str, Any]:
+    datasets_summary = []
+    for dataset in result.get("datasets", []):
+        methods_summary: dict[str, Any] = {}
+        for method_name, method_payload in dataset.get("methods", {}).items():
+            summarized_payload = dict(method_payload)
+            window_values = summarized_payload.pop("window_w1_values", None)
+            if window_values is not None:
+                summarized_payload["window_w1_values_count"] = len(window_values)
+                if len(window_values) > 0:
+                    window_values_np = np.asarray(window_values, dtype=np.float64)
+                    summarized_payload["window_w1_values_summary"] = {
+                        "min": float(np.min(window_values_np)),
+                        "max": float(np.max(window_values_np)),
+                        "mean": float(np.mean(window_values_np, dtype=np.float64)),
+                    }
+            methods_summary[method_name] = summarized_payload
+
+        datasets_summary.append(
+            {
+                "dataset_name": dataset.get("dataset_name"),
+                "display_name": dataset.get("display_name"),
+                "methods": methods_summary,
+            }
+        )
+
+    return {
+        "analysis": result.get("analysis"),
+        "manifest_path": result.get("manifest_path"),
+        "output_path": result.get("output_path"),
+        "metadata_path": result.get("metadata_path"),
+        "seed": result.get("seed"),
+        "max_points": result.get("max_points"),
+        "num_repeats": result.get("num_repeats"),
+        "repeat_estimator": result.get("repeat_estimator"),
+        "aggregation": result.get("aggregation"),
+        "datasets": datasets_summary,
+    }
+
+
 def plot_source_target_wasserstein_bars(
     manifest_path: str,
     output_path: str,
@@ -1030,6 +1142,9 @@ def plot_source_target_wasserstein_bars(
     _configure_style()
     dataset_specs = _load_source_target_manifest(manifest_path)
     dataset_results: list[dict[str, Any]] = []
+    experiment_cache: dict[
+        tuple[str, str | None, int | None, int | None, int | None], SourceTargetExperimentHandle
+    ] = {}
 
     for dataset_idx, dataset_spec in enumerate(dataset_specs):
         method_results: dict[str, Any] = {}
@@ -1043,6 +1158,7 @@ def plot_source_target_wasserstein_bars(
                 batch_size=batch_size,
                 num_worker=num_worker,
                 num_samples=num_samples,
+                experiment_cache=experiment_cache,
             )
             metric = _estimate_source_target_wasserstein(
                 reservoir=reservoir,
@@ -1131,7 +1247,7 @@ def main() -> None:
         num_worker=args.analysis_num_worker,
         num_samples=args.analysis_num_samples,
     )
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+    print(json.dumps(_summarize_result_for_stdout(result), indent=2, ensure_ascii=False))
 
 
 if __name__ == "__main__":

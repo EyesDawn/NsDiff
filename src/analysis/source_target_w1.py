@@ -1053,6 +1053,58 @@ def _filter_pdn_outlier_windows(
     return filtered_reservoir, filter_info
 
 
+def _filter_pdn_sigma_windows(
+    reservoir: SourceTargetReservoir,
+    filter_method: str,
+    lower_value: float,
+    upper_value: float,
+) -> tuple[SourceTargetReservoir, dict[str, Any] | None]:
+    if filter_method == "none":
+        return reservoir, None
+
+    sigma_scores = _mean_abs_per_window(reservoir.source_std)
+    if sigma_scores.size == 0:
+        return reservoir, None
+
+    if filter_method != "quantile_band":
+        raise ValueError(
+            f"Unsupported PDN sigma filter method `{filter_method}`. "
+            "Expected one of: none, quantile_band."
+        )
+    if not (0.0 <= lower_value < upper_value <= 1.0):
+        raise ValueError(
+            "PDN sigma quantile band expects `lower_value` and `upper_value` in "
+            "[0, 1] with lower_value < upper_value."
+        )
+
+    lower_threshold = float(np.quantile(sigma_scores, lower_value))
+    upper_threshold = float(np.quantile(sigma_scores, upper_value))
+    keep_mask = (sigma_scores >= lower_threshold) & (sigma_scores <= upper_threshold)
+    kept = int(np.sum(keep_mask))
+    if kept <= 0:
+        raise ValueError("PDN sigma filter removed all sampled windows.")
+
+    filtered_reservoir = SourceTargetReservoir(
+        target=reservoir.target[keep_mask],
+        source_mean=reservoir.source_mean[keep_mask],
+        source_std=reservoir.source_std[keep_mask],
+        sampled_windows=kept,
+        total_windows=reservoir.total_windows,
+    )
+    filter_info = {
+        "method": filter_method,
+        "lower_value": float(lower_value),
+        "upper_value": float(upper_value),
+        "lower_threshold": lower_threshold,
+        "upper_threshold": upper_threshold,
+        "score": "mean_abs_sigma",
+        "sampled_windows_before_filter": int(reservoir.sampled_windows),
+        "sampled_windows_after_filter": kept,
+        "filtered_sampled_windows": int(reservoir.sampled_windows - kept),
+    }
+    return filtered_reservoir, filter_info
+
+
 def _plot_source_target_wasserstein_bars(
     dataset_specs: Sequence[SourceTargetDatasetSpec],
     dataset_results: Sequence[dict[str, Any]],
@@ -1095,7 +1147,6 @@ def _plot_source_target_wasserstein_bars(
         )
         ax.errorbar(x_pos, heights, yerr=errors, **errorbar_style)
 
-    ax.set_xlabel("Dataset")
     ax.set_ylabel("Mean Conditional W1 to Target")
     ax.set_xticks(x)
     ax.set_xticklabels([spec.display_name for spec in dataset_specs])
@@ -1151,6 +1202,9 @@ def _save_source_target_metadata(
     seed: int,
     pdn_filter_method: str,
     pdn_filter_value: float,
+    pdn_sigma_filter_method: str,
+    pdn_sigma_filter_lower: float,
+    pdn_sigma_filter_upper: float,
 ) -> None:
     payload = {
         "analysis": "source_target_conditional_wasserstein_bars",
@@ -1160,6 +1214,9 @@ def _save_source_target_metadata(
         "num_repeats": int(num_repeats),
         "pdn_filter_method": pdn_filter_method,
         "pdn_filter_value": float(pdn_filter_value),
+        "pdn_sigma_filter_method": pdn_sigma_filter_method,
+        "pdn_sigma_filter_lower": float(pdn_sigma_filter_lower),
+        "pdn_sigma_filter_upper": float(pdn_sigma_filter_upper),
         "repeat_estimator": "source_resampling_per_window",
         "aggregation": "mean_over_windows_of_conditional_w1",
         "datasets": dataset_results,
@@ -1223,6 +1280,9 @@ def plot_source_target_wasserstein_bars(
     num_samples: int | None = None,
     pdn_filter_method: str = "none",
     pdn_filter_value: float = 0.99,
+    pdn_sigma_filter_method: str = "none",
+    pdn_sigma_filter_lower: float = 0.05,
+    pdn_sigma_filter_upper: float = 0.95,
 ) -> dict[str, Any]:
     if max_points <= 0:
         raise ValueError("max_points must be positive.")
@@ -1251,6 +1311,14 @@ def plot_source_target_wasserstein_bars(
                 experiment_cache=experiment_cache,
             )
             pdn_filter_info = None
+            pdn_sigma_filter_info = None
+            if method_spec.display_name == "PDN-Flow" and method_spec.space != "pdn":
+                reservoir, pdn_sigma_filter_info = _filter_pdn_sigma_windows(
+                    reservoir=reservoir,
+                    filter_method=pdn_sigma_filter_method,
+                    lower_value=pdn_sigma_filter_lower,
+                    upper_value=pdn_sigma_filter_upper,
+                )
             if method_spec.display_name == "PDN-Flow" and method_spec.space == "pdn":
                 reservoir, pdn_filter_info = _filter_pdn_outlier_windows(
                     reservoir=reservoir,
@@ -1279,6 +1347,7 @@ def plot_source_target_wasserstein_bars(
                 "sampled_windows": int(reservoir.sampled_windows),
                 "total_windows": int(reservoir.total_windows),
                 "pdn_filter": pdn_filter_info,
+                "pdn_sigma_filter": pdn_sigma_filter_info,
             }
 
         dataset_results.append(
@@ -1304,6 +1373,9 @@ def plot_source_target_wasserstein_bars(
             seed=seed,
             pdn_filter_method=pdn_filter_method,
             pdn_filter_value=pdn_filter_value,
+            pdn_sigma_filter_method=pdn_sigma_filter_method,
+            pdn_sigma_filter_lower=pdn_sigma_filter_lower,
+            pdn_sigma_filter_upper=pdn_sigma_filter_upper,
         )
     return {
         "analysis": "source_target_conditional_wasserstein_bars",
@@ -1315,6 +1387,9 @@ def plot_source_target_wasserstein_bars(
         "num_repeats": int(num_repeats),
         "pdn_filter_method": pdn_filter_method,
         "pdn_filter_value": float(pdn_filter_value),
+        "pdn_sigma_filter_method": pdn_sigma_filter_method,
+        "pdn_sigma_filter_lower": float(pdn_sigma_filter_lower),
+        "pdn_sigma_filter_upper": float(pdn_sigma_filter_upper),
         "repeat_estimator": "source_resampling_per_window",
         "aggregation": "mean_over_windows_of_conditional_w1",
         "datasets": dataset_results,
@@ -1341,6 +1416,14 @@ def main() -> None:
         choices=("none", "quantile", "robust_zscore"),
     )
     parser.add_argument("--pdn_filter_value", type=float, default=0.99)
+    parser.add_argument(
+        "--pdn_sigma_filter_method",
+        type=str,
+        default="none",
+        choices=("none", "quantile_band"),
+    )
+    parser.add_argument("--pdn_sigma_filter_lower", type=float, default=0.05)
+    parser.add_argument("--pdn_sigma_filter_upper", type=float, default=0.95)
     args = parser.parse_args()
 
     result = plot_source_target_wasserstein_bars(
@@ -1357,6 +1440,9 @@ def main() -> None:
         num_samples=args.analysis_num_samples,
         pdn_filter_method=args.pdn_filter_method,
         pdn_filter_value=args.pdn_filter_value,
+        pdn_sigma_filter_method=args.pdn_sigma_filter_method,
+        pdn_sigma_filter_lower=args.pdn_sigma_filter_lower,
+        pdn_sigma_filter_upper=args.pdn_sigma_filter_upper,
     )
     print(json.dumps(_summarize_result_for_stdout(result), indent=2, ensure_ascii=False))
 

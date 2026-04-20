@@ -24,7 +24,6 @@ MANIFEST_PATH="${MANIFEST_PATH:-${OUTPUT_DIR}/electricity_probabilistic_decoupli
 SELECTION_PATH="${SELECTION_PATH:-}"
 
 TIMEGRAD_BATCH_SIZE="${TIMEGRAD_BATCH_SIZE:-${BATCH_SIZE}}"
-CSDI_BATCH_SIZE="${CSDI_BATCH_SIZE:-${BATCH_SIZE}}"
 TIMEDIFF_BATCH_SIZE="${TIMEDIFF_BATCH_SIZE:-${BATCH_SIZE}}"
 NSDIFF_BATCH_SIZE="${NSDIFF_BATCH_SIZE:-${BATCH_SIZE}}"
 TMDM_BATCH_SIZE="${TMDM_BATCH_SIZE:-${BATCH_SIZE}}"
@@ -98,21 +97,18 @@ export_one() {
 }
 
 TIMEGRAD_RUN_DIR="${TIMEGRAD_RUN_DIR:-$(resolve_latest_run_dir "./results/runs/TimeGrad/${DATASET_NAME}/${RUN_SPEC}" || true)}"
-CSDI_RUN_DIR="${CSDI_RUN_DIR:-$(resolve_latest_run_dir "./results/runs/CSDI/${DATASET_NAME}/${RUN_SPEC}" || true)}"
 TIMEDIFF_RUN_DIR="${TIMEDIFF_RUN_DIR:-$(resolve_latest_run_dir "./results/runs/TimeDiff/${DATASET_NAME}/${RUN_SPEC}" || true)}"
 NSDIFF_RUN_DIR="${NSDIFF_RUN_DIR:-$(resolve_latest_run_dir "./results/runs/NsDiff4/${DATASET_NAME}/${RUN_SPEC}" || true)}"
 TMDM_RUN_DIR="${TMDM_RUN_DIR:-$(resolve_latest_run_dir "./results/runs/TMDM/${DATASET_NAME}/${RUN_SPEC}" || true)}"
 IREFLOW_RUN_DIR="${IREFLOW_RUN_DIR:-$(resolve_latest_ireflow_run_dir "./results/runs/iReflow/${DATASET_NAME}/${RUN_SPEC}" || true)}"
 
 TIMEGRAD_NPZ="${OUTPUT_DIR}/timegrad_forecast_samples.npz"
-CSDI_NPZ="${OUTPUT_DIR}/csdi_forecast_samples.npz"
 TIMEDIFF_NPZ="${OUTPUT_DIR}/timediff_forecast_samples.npz"
 NSDIFF_NPZ="${OUTPUT_DIR}/nsdiff_forecast_samples.npz"
 TMDM_NPZ="${OUTPUT_DIR}/tmdm_forecast_samples.npz"
 IREFLOW_NPZ="${OUTPUT_DIR}/ireflow_forecast_samples.npz"
 
 export_one "TimeGrad" "${TIMEGRAD_RUN_DIR}" "${TIMEGRAD_NPZ}" "${TIMEGRAD_BATCH_SIZE}"
-export_one "CSDI" "${CSDI_RUN_DIR}" "${CSDI_NPZ}" "${CSDI_BATCH_SIZE}"
 export_one "TimeDiff" "${TIMEDIFF_RUN_DIR}" "${TIMEDIFF_NPZ}" "${TIMEDIFF_BATCH_SIZE}"
 export_one "NsDiff" "${NSDIFF_RUN_DIR}" "${NSDIFF_NPZ}" "${NSDIFF_BATCH_SIZE}"
 export_one "TMDM" "${TMDM_RUN_DIR}" "${TMDM_NPZ}" "${TMDM_BATCH_SIZE}"
@@ -124,7 +120,6 @@ manifest = {
     "dataset_name": "${DATASET_NAME}",
     "methods": [
         {"name": "TimeGrad", "path": "${TIMEGRAD_NPZ}"},
-        {"name": "CSDI", "path": "${CSDI_NPZ}"},
         {"name": "TimeDiff", "path": "${TIMEDIFF_NPZ}"},
         {"name": "NsDiff", "path": "${NSDIFF_NPZ}"},
         {"name": "TMDM", "path": "${TMDM_NPZ}"},

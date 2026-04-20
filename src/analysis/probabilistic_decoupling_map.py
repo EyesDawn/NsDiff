@@ -127,6 +127,8 @@ class MethodScores:
     spec: MethodSpec
     macro_all: np.ndarray
     micro_all: np.ndarray
+    macro_plot: np.ndarray
+    micro_plot: np.ndarray
     macro_mid: np.ndarray
     micro_mid: np.ndarray
     centroids: Dict[str, Tuple[float, float]]
@@ -548,6 +550,7 @@ def _compute_method_scores(
     micro_all = _obs_distance_score(sample_residual, truth_residual, batch_size=batch_size)
     low_idx = selected.low_pair_indices
     mid_idx = selected.mid_pair_indices
+    plot_idx = np.sort(np.concatenate([low_idx, mid_idx], axis=0))
 
     centroids = {
         "low": (
@@ -564,6 +567,8 @@ def _compute_method_scores(
         spec=artifact.spec,
         macro_all=macro_all,
         micro_all=micro_all,
+        macro_plot=macro_all[plot_idx],
+        micro_plot=micro_all[plot_idx],
         macro_mid=macro_all[mid_idx],
         micro_mid=micro_all[mid_idx],
         centroids=centroids,
@@ -593,6 +598,58 @@ def _compute_centroid_axis_limits(
         return vmin - pad, vmax + pad
 
     return _limits(x_all), _limits(y_all)
+
+
+def _asinh_transform(values: np.ndarray, scale: float) -> np.ndarray:
+    return np.arcsinh(np.asarray(values, dtype=np.float32) / max(scale, 1e-6))
+
+
+def _asinh_inverse(values: np.ndarray, scale: float) -> np.ndarray:
+    return np.sinh(np.asarray(values, dtype=np.float32)) * max(scale, 1e-6)
+
+
+def _compute_asinh_scale(values: np.ndarray) -> float:
+    finite = np.asarray(values, dtype=np.float32)
+    finite = finite[np.isfinite(finite)]
+    positive = finite[finite > 0]
+    if positive.size == 0:
+        return 1.0
+    return float(max(np.median(positive), 1e-6))
+
+
+def _compute_scatter_axis_limits(
+    method_scores: Sequence[MethodScores],
+) -> Tuple[Tuple[float, float], Tuple[float, float], float]:
+    xs = []
+    ys = []
+    for item in method_scores:
+        xs.append(item.macro_plot)
+        ys.append(item.micro_plot)
+        for centroid in item.centroids.values():
+            xs.append(np.asarray([centroid[0]], dtype=np.float32))
+            ys.append(np.asarray([centroid[1]], dtype=np.float32))
+
+    x_all_raw = np.concatenate(xs)
+    y_all = np.concatenate(ys)
+    x_scale = _compute_asinh_scale(x_all_raw)
+    x_all = _asinh_transform(x_all_raw, x_scale)
+
+    def _limits(values: np.ndarray) -> Tuple[float, float]:
+        vmin = float(np.min(values))
+        vmax = float(np.max(values))
+        if math.isclose(vmin, vmax):
+            pad = 0.05 * max(abs(vmin), 1.0)
+            return vmin - pad, vmax + pad
+        pad = 0.08 * (vmax - vmin)
+        return vmin - pad, vmax + pad
+
+    return _limits(x_all), _limits(y_all), x_scale
+
+
+def _compute_global_medians(method_scores: Sequence[MethodScores]) -> Tuple[float, float]:
+    x_all = np.concatenate([item.macro_plot for item in method_scores])
+    y_all = np.concatenate([item.micro_plot for item in method_scores])
+    return float(np.median(x_all)), float(np.median(y_all))
 
 
 def _kde_thresholds(z: np.ndarray, masses: Sequence[float]) -> List[float]:
@@ -625,7 +682,7 @@ def _draw_density_contours(ax: plt.Axes, x: np.ndarray, y: np.ndarray, color: st
         )
         positions = np.vstack([grid_x.ravel(), grid_y.ravel()])
         z = kde(positions).reshape(grid_x.shape)
-        levels = _kde_thresholds(z, masses=[0.8, 0.5])
+        levels = _kde_thresholds(z, masses=[0.8])
         if len(levels) >= 1:
             ax.contour(
                 grid_x,
@@ -651,6 +708,66 @@ def _add_better_arrow(ax: plt.Axes) -> None:
         color="#666666",
         arrowprops=dict(arrowstyle="->", color="#B0B0B0", lw=2.1),
     )
+
+
+def _apply_axis_style(ax: plt.Axes) -> None:
+    ax.tick_params(axis="both", which="major", width=1.15, length=5.5)
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_linewidth(1.15)
+        spine.set_color("#4A4A4A")
+    _add_better_arrow(ax)
+
+
+def _plot_decoupling_map(
+    ax: plt.Axes,
+    method_scores: Sequence[MethodScores],
+    global_median: Tuple[float, float],
+    xlim: Tuple[float, float],
+    ylim: Tuple[float, float],
+    x_scale: float,
+) -> None:
+    ax.axvline(global_median[0], color="#D0D0D0", lw=1.2, ls="--", zorder=0)
+    ax.axhline(global_median[1], color="#D0D0D0", lw=1.2, ls="--", zorder=0)
+
+    for item in method_scores:
+        x_plot = _asinh_transform(item.macro_plot, x_scale)
+        ax.scatter(
+            x_plot,
+            item.micro_plot,
+            s=34,
+            alpha=0.8,
+            color=item.spec.color,
+            marker=item.spec.marker,
+            linewidths=0.0,
+            zorder=1,
+        )
+        centroid_x = float(_asinh_transform(np.asarray([np.mean(item.macro_plot)], dtype=np.float32), x_scale)[0])
+        centroid_y = float(np.mean(item.micro_plot))
+        ax.scatter(
+            [centroid_x],
+            [centroid_y],
+            s=235 if item.spec.marker != "*" else 300,
+            color=item.spec.color,
+            marker=item.spec.marker,
+            edgecolors="black",
+            linewidths=1.15,
+            zorder=5,
+        )
+
+    ax.set_xlim(*xlim)
+    ax.set_ylim(*ylim)
+    raw_min = max(0.0, float(_asinh_inverse(np.asarray([xlim[0]], dtype=np.float32), x_scale)[0]))
+    raw_max = float(_asinh_inverse(np.asarray([xlim[1]], dtype=np.float32), x_scale)[0])
+    tick_candidates = np.asarray([0, 1, 2, 5, 10, 20, 40, 80, 160, 320], dtype=np.float32)
+    raw_ticks = tick_candidates[(tick_candidates >= raw_min) & (tick_candidates <= raw_max)]
+    if raw_ticks.size < 3:
+        raw_ticks = np.linspace(raw_min, raw_max, num=4, dtype=np.float32)
+    ax.set_xticks(_asinh_transform(raw_ticks, x_scale))
+    ax.set_xticklabels([f"{tick:g}" for tick in raw_ticks])
+    ax.set_xlabel("Macro distribution error (asinh scale)")
+    ax.set_ylabel("Micro distribution error")
+    _apply_axis_style(ax)
 
 
 def _plot_centroid_shift(
@@ -700,12 +817,7 @@ def _plot_centroid_shift(
     ax.set_ylim(*ylim)
     ax.set_xlabel("Macro distribution error")
     ax.set_ylabel("Micro distribution error")
-    ax.tick_params(axis="both", which="major", width=1.15, length=5.5)
-    for spine in ax.spines.values():
-        spine.set_visible(True)
-        spine.set_linewidth(1.15)
-        spine.set_color("#4A4A4A")
-    _add_better_arrow(ax)
+    _apply_axis_style(ax)
 
 
 def _build_legend(method_scores: Sequence[MethodScores]) -> List[Line2D]:
@@ -731,16 +843,40 @@ def _reorder_legend_handles(handles: Sequence[Line2D]) -> List[Line2D]:
     handle_map = {str(handle.get_label()): handle for handle in handles}
     preferred_order = [
         "TimeGrad",
-        "TMDM",
         "TimeDiff",
         "NsDiff",
-        "CSDI",
+        "TMDM",
         "PDN-Flow",
     ]
     reordered = [handle_map[name] for name in preferred_order if name in handle_map]
     seen = {handle.get_label() for handle in reordered}
     reordered.extend(handle for handle in handles if handle.get_label() not in seen)
     return reordered
+
+
+def _add_panel_legend(
+    ax: plt.Axes,
+    handles: Sequence[Line2D],
+    loc: str,
+    bbox_to_anchor: Tuple[float, float],
+    ncol: int,
+) -> None:
+    ax.legend(
+        handles=handles,
+        loc=loc,
+        ncol=ncol,
+        bbox_to_anchor=bbox_to_anchor,
+        frameon=True,
+        fancybox=False,
+        framealpha=0.95,
+        edgecolor="#D0D0D0",
+        facecolor="white",
+        borderpad=0.55,
+        labelspacing=0.45,
+        handlelength=1.9,
+        handletextpad=0.55,
+        columnspacing=1.0,
+    )
 
 
 def _scores_to_metadata(
@@ -823,34 +959,39 @@ def run_analysis(
             )
         )
 
-    xlim, ylim = _compute_centroid_axis_limits(scores)
+    left_xlim, left_ylim, left_x_scale = _compute_scatter_axis_limits(scores)
+    right_xlim, right_ylim = _compute_centroid_axis_limits(scores)
+    medians = _compute_global_medians(scores)
+    left_global_median = (
+        float(_asinh_transform(np.asarray([medians[0]], dtype=np.float32), left_x_scale)[0]),
+        medians[1],
+    )
 
-    fig, ax = plt.subplots(1, 1, figsize=(7.4, 6.0), constrained_layout=False)
-    _plot_centroid_shift(
-        ax=ax,
+    fig, axes = plt.subplots(1, 2, figsize=(13.6, 6.0), constrained_layout=False)
+    _plot_decoupling_map(
+        ax=axes[0],
         method_scores=scores,
-        xlim=xlim,
-        ylim=ylim,
+        global_median=left_global_median,
+        xlim=left_xlim,
+        ylim=left_ylim,
+        x_scale=left_x_scale,
+    )
+    _plot_centroid_shift(
+        ax=axes[1],
+        method_scores=scores,
+        xlim=right_xlim,
+        ylim=right_ylim,
     )
 
     handles = _reorder_legend_handles(_build_legend(scores))
-    ax.legend(
+    _add_panel_legend(
+        ax=axes[1],
         handles=handles,
         loc="lower right",
-        ncol=3,
         bbox_to_anchor=(0.985, 0.03),
-        frameon=True,
-        fancybox=False,
-        framealpha=0.95,
-        edgecolor="#D0D0D0",
-        facecolor="white",
-        borderpad=0.55,
-        labelspacing=0.45,
-        handlelength=1.9,
-        handletextpad=0.55,
-        columnspacing=1.0,
+        ncol=3,
     )
-    fig.tight_layout()
+    fig.tight_layout(w_pad=2.0)
 
     out_dir = os.path.dirname(output_path)
     if out_dir:

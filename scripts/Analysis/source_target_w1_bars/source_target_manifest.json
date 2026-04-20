@@ -1,45 +1,23 @@
 {
   "datasets": [
     {
-      "name": "ETTh1",
+      "name": "ETTm1",
       "methods": {
         "TimeGrad": {
-          "config_run_dir": "/workspace/backup/NsDiff/results/runs/F/ETTh1/w92h1s192/1",
+          "config_run_dir": "/workspace/backup/NsDiff/results/runs/F/ETTm1/w96h1s192/1",
           "space": "scaled"
         },
         "TMDM": {
-          "mu_run_dir": "/workspace/backup/NsDiff/results/runs/F/ETTh1/w92h1s192/1",
+          "mu_run_dir": "/workspace/backup/NsDiff/results/runs/F/ETTm1/w96h1s192/1",
           "space": "scaled"
         },
         "NsDiff": {
-          "mu_run_dir": "/workspace/backup/NsDiff/results/runs/F/ETTh1/w92h1s192/1",
-          "sigma_run_dir": "/workspace/backup/NsDiff/results/runs/G/ETTh1/w92h1s192/1",
+          "mu_run_dir": "/workspace/backup/NsDiff/results/runs/F/ETTm1/w96h1s192/1",
+          "sigma_run_dir": "/workspace/backup/NsDiff/results/runs/G/ETTm1/w96h1s192/1",
           "space": "scaled"
         },
         "PDN-Flow": {
-          "run_dir": "/workspace/backup/NsDiff/results/runs/iReflow/ETTh1/w96h1s192/2ed7d7e7ac6b47483bc3bdfbb1f8ac4f",
-          "space": "scaled"
-        }
-      }
-    },
-    {
-      "name": "Weather",
-      "methods": {
-        "TimeGrad": {
-          "config_run_dir": "/workspace/backup/NsDiff/results/runs/F/Weather/w96h1s192/1",
-          "space": "scaled"
-        },
-        "TMDM": {
-          "mu_run_dir": "/workspace/backup/NsDiff/results/runs/F/Weather/w96h1s192/1",
-          "space": "scaled"
-        },
-        "NsDiff": {
-          "mu_run_dir": "/workspace/backup/NsDiff/results/runs/F/Weather/w96h1s192/1",
-          "sigma_run_dir": "/workspace/backup/NsDiff/results/runs/G/Weather/w96h1s192/1",
-          "space": "scaled"
-        },
-        "PDN-Flow": {
-          "run_dir": "/workspace/backup/NsDiff/results/runs/iReflow/Weather/w96h1s192/9dea8bce7c77076cd3239db4195eb958/train_mode_1",
+          "run_dir": "/workspace/backup/NsDiff/results/runs/iReflow/ETTm1/w96h1s192/8c78caa1341054d7d68a874814ab9ec9/train_mode_1",
           "space": "scaled"
         }
       }
@@ -63,6 +41,28 @@
         },
         "PDN-Flow": {
           "run_dir": "/workspace/backup/NsDiff/results/runs/iReflow/Electricity/w96h1s192/d6372fd2601757a0d2f9795b84b5e314/train_mode_1",
+          "space": "scaled"
+        }
+      }
+    },
+    {
+      "name": "Traffic",
+      "methods": {
+        "TimeGrad": {
+          "config_run_dir": "/workspace/backup/NsDiff/results/runs/F/Traffic/w96h1s192/1",
+          "space": "scaled"
+        },
+        "TMDM": {
+          "mu_run_dir": "/workspace/backup/NsDiff/results/runs/F/Traffic/w96h1s192/1",
+          "space": "scaled"
+        },
+        "NsDiff": {
+          "mu_run_dir": "/workspace/backup/NsDiff/results/runs/F/Traffic/w96h1s192/1",
+          "sigma_run_dir": "/workspace/backup/NsDiff/results/runs/G/Traffic/w96h1s192/1",
+          "space": "scaled"
+        },
+        "PDN-Flow": {
+          "run_dir": "/workspace/backup/NsDiff/results/runs/iReflow/Traffic/w96h1s192/9ede84ebb9c06bf77121406b8a8bee7a/train_mode_1",
           "space": "scaled"
         }
       }

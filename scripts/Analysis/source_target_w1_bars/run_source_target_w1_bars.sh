@@ -22,6 +22,9 @@ ANALYSIS_NUM_WORKER="${ANALYSIS_NUM_WORKER:-4}"
 ANALYSIS_NUM_SAMPLES="${ANALYSIS_NUM_SAMPLES:-16}"
 PDN_FILTER_METHOD="${PDN_FILTER_METHOD:-none}"
 PDN_FILTER_VALUE="${PDN_FILTER_VALUE:-0.99}"
+PDN_SIGMA_FILTER_METHOD="${PDN_SIGMA_FILTER_METHOD:-quantile_band}"
+PDN_SIGMA_FILTER_LOWER="${PDN_SIGMA_FILTER_LOWER:-0.05}"
+PDN_SIGMA_FILTER_UPPER="${PDN_SIGMA_FILTER_UPPER:-0.95}"
 
 if [ ! -f "${MANIFEST_PATH}" ]; then
     echo "Missing manifest: ${MANIFEST_PATH}"
@@ -60,6 +63,18 @@ fi
 
 if [ -n "${PDN_FILTER_VALUE:-}" ]; then
     CMD+=(--pdn_filter_value "${PDN_FILTER_VALUE}")
+fi
+
+if [ -n "${PDN_SIGMA_FILTER_METHOD:-}" ]; then
+    CMD+=(--pdn_sigma_filter_method "${PDN_SIGMA_FILTER_METHOD}")
+fi
+
+if [ -n "${PDN_SIGMA_FILTER_LOWER:-}" ]; then
+    CMD+=(--pdn_sigma_filter_lower "${PDN_SIGMA_FILTER_LOWER}")
+fi
+
+if [ -n "${PDN_SIGMA_FILTER_UPPER:-}" ]; then
+    CMD+=(--pdn_sigma_filter_upper "${PDN_SIGMA_FILTER_UPPER}")
 fi
 
 "${CMD[@]}"

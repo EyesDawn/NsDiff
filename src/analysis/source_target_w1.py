@@ -6,7 +6,7 @@ This experiment compares four methods under the source/target definitions:
 1. TimeGrad:    source = N(0, I),                    target = Y in origin space
 2. TMDM:        source = N(mu_Y_hat, I),             target = Y in origin space
 3. NsDiff:      source = N(mu_Y_hat, sigma_Y_hat^2), target = Y in origin space
-4. PDN-Flow:    source/target both measured in PDN space
+4. PDN-Flow:    source/target measured in PDN, scaled, or origin space
 
 For each test window, we treat the observed target window as a Dirac conditional
 target distribution and estimate W1(source | x, delta_target | x) with the
@@ -136,6 +136,14 @@ class SourceTargetExperimentHandle:
     exp: Any
     model_type: str
     model_loaded: bool
+
+
+def _mean_abs_per_window(values: np.ndarray) -> np.ndarray:
+    values = np.asarray(values, dtype=np.float64)
+    if values.ndim < 2:
+        raise ValueError(f"Expected at least 2 dims to compute per-window magnitude, got {values.shape}.")
+    reduce_axes = tuple(range(1, values.ndim))
+    return np.mean(np.abs(values), axis=reduce_axes, dtype=np.float64)
 
 
 def _normalize_source_target_method_name(name: str) -> str:
@@ -634,14 +642,29 @@ def _prepare_legacy_source_target_batch(
         return target, source_mean, source_std
 
     if display_name == "PDN-Flow":
-        if space != "pdn":
-            raise ValueError("PDN-Flow must use `pdn` comparison space.")
         _, y_hat, sigma = exp.model.get_encoder_features(batch_x, batch_x_date_enc)
         y_hat = y_hat[:, :, feature_slice]
         sigma = torch.clamp_min(sigma[:, :, feature_slice], eps)
-        target = (batch_y[:, :, feature_slice] - y_hat) / sigma
-        source_mean = torch.zeros_like(target)
-        source_std = torch.ones_like(target)
+        if space == "pdn":
+            target = (batch_y[:, :, feature_slice] - y_hat) / sigma
+            source_mean = torch.zeros_like(target)
+            source_std = torch.ones_like(target)
+        elif space == "scaled":
+            target = batch_y[:, :, feature_slice]
+            source_mean = y_hat
+            source_std = sigma
+        elif space == "origin":
+            target = origin_y[:, :, feature_slice]
+            source_mean, source_std = _transform_gaussian_to_origin_space(
+                exp=exp,
+                mean_scaled=y_hat,
+                std_scaled=sigma,
+            )
+        else:
+            raise ValueError(
+                f"Unsupported comparison space for PDN-Flow: {space}. "
+                "Expected one of: pdn, scaled, origin."
+            )
         return target, source_mean, source_std
 
     raise ValueError(f"Unsupported method `{display_name}` for source-target analysis.")
@@ -969,6 +992,67 @@ def _estimate_source_target_wasserstein(
     }
 
 
+def _filter_pdn_outlier_windows(
+    reservoir: SourceTargetReservoir,
+    filter_method: str,
+    filter_value: float,
+) -> tuple[SourceTargetReservoir, dict[str, Any] | None]:
+    if filter_method == "none":
+        return reservoir, None
+
+    scores = _mean_abs_per_window(reservoir.target)
+    if scores.size == 0:
+        return reservoir, None
+
+    if filter_method == "quantile":
+        if not (0.0 < filter_value <= 1.0):
+            raise ValueError("PDN quantile filter expects `filter_value` in (0, 1].")
+        threshold = float(np.quantile(scores, filter_value))
+        keep_mask = scores <= threshold
+        extra_info: dict[str, Any] = {"quantile": float(filter_value)}
+    elif filter_method == "robust_zscore":
+        if filter_value <= 0.0:
+            raise ValueError("PDN robust z-score filter expects a positive `filter_value`.")
+        median = float(np.median(scores))
+        mad = float(np.median(np.abs(scores - median)))
+        denom = 1.4826 * mad
+        if denom <= 0.0:
+            keep_mask = np.ones_like(scores, dtype=bool)
+        else:
+            robust_z = np.abs(scores - median) / denom
+            keep_mask = robust_z <= filter_value
+        threshold = float(filter_value)
+        extra_info = {"median": median, "mad": mad}
+    else:
+        raise ValueError(
+            f"Unsupported PDN filter method `{filter_method}`. "
+            "Expected one of: none, quantile, robust_zscore."
+        )
+
+    kept = int(np.sum(keep_mask))
+    if kept <= 0:
+        raise ValueError("PDN outlier filter removed all sampled windows.")
+
+    filtered_reservoir = SourceTargetReservoir(
+        target=reservoir.target[keep_mask],
+        source_mean=reservoir.source_mean[keep_mask],
+        source_std=reservoir.source_std[keep_mask],
+        sampled_windows=kept,
+        total_windows=reservoir.total_windows,
+    )
+    filter_info = {
+        "method": filter_method,
+        "value": float(filter_value),
+        "threshold": threshold,
+        "score": "mean_abs_pdn_target",
+        "sampled_windows_before_filter": int(reservoir.sampled_windows),
+        "sampled_windows_after_filter": kept,
+        "filtered_sampled_windows": int(reservoir.sampled_windows - kept),
+    }
+    filter_info.update(extra_info)
+    return filtered_reservoir, filter_info
+
+
 def _plot_source_target_wasserstein_bars(
     dataset_specs: Sequence[SourceTargetDatasetSpec],
     dataset_results: Sequence[dict[str, Any]],
@@ -1065,6 +1149,8 @@ def _save_source_target_metadata(
     max_points: int,
     num_repeats: int,
     seed: int,
+    pdn_filter_method: str,
+    pdn_filter_value: float,
 ) -> None:
     payload = {
         "analysis": "source_target_conditional_wasserstein_bars",
@@ -1072,6 +1158,8 @@ def _save_source_target_metadata(
         "seed": int(seed),
         "max_points": int(max_points),
         "num_repeats": int(num_repeats),
+        "pdn_filter_method": pdn_filter_method,
+        "pdn_filter_value": float(pdn_filter_value),
         "repeat_estimator": "source_resampling_per_window",
         "aggregation": "mean_over_windows_of_conditional_w1",
         "datasets": dataset_results,
@@ -1133,6 +1221,8 @@ def plot_source_target_wasserstein_bars(
     batch_size: int | None = None,
     num_worker: int | None = None,
     num_samples: int | None = None,
+    pdn_filter_method: str = "none",
+    pdn_filter_value: float = 0.99,
 ) -> dict[str, Any]:
     if max_points <= 0:
         raise ValueError("max_points must be positive.")
@@ -1160,6 +1250,13 @@ def plot_source_target_wasserstein_bars(
                 num_samples=num_samples,
                 experiment_cache=experiment_cache,
             )
+            pdn_filter_info = None
+            if method_spec.display_name == "PDN-Flow" and method_spec.space == "pdn":
+                reservoir, pdn_filter_info = _filter_pdn_outlier_windows(
+                    reservoir=reservoir,
+                    filter_method=pdn_filter_method,
+                    filter_value=pdn_filter_value,
+                )
             metric = _estimate_source_target_wasserstein(
                 reservoir=reservoir,
                 num_repeats=num_repeats,
@@ -1181,6 +1278,7 @@ def plot_source_target_wasserstein_bars(
                 "window_w1_values": metric["window_values"],
                 "sampled_windows": int(reservoir.sampled_windows),
                 "total_windows": int(reservoir.total_windows),
+                "pdn_filter": pdn_filter_info,
             }
 
         dataset_results.append(
@@ -1204,6 +1302,8 @@ def plot_source_target_wasserstein_bars(
             max_points=max_points,
             num_repeats=num_repeats,
             seed=seed,
+            pdn_filter_method=pdn_filter_method,
+            pdn_filter_value=pdn_filter_value,
         )
     return {
         "analysis": "source_target_conditional_wasserstein_bars",
@@ -1213,6 +1313,8 @@ def plot_source_target_wasserstein_bars(
         "seed": int(seed),
         "max_points": int(max_points),
         "num_repeats": int(num_repeats),
+        "pdn_filter_method": pdn_filter_method,
+        "pdn_filter_value": float(pdn_filter_value),
         "repeat_estimator": "source_resampling_per_window",
         "aggregation": "mean_over_windows_of_conditional_w1",
         "datasets": dataset_results,
@@ -1232,6 +1334,13 @@ def main() -> None:
     parser.add_argument("--analysis_batch_size", type=int, default=None)
     parser.add_argument("--analysis_num_worker", type=int, default=None)
     parser.add_argument("--analysis_num_samples", type=int, default=None)
+    parser.add_argument(
+        "--pdn_filter_method",
+        type=str,
+        default="none",
+        choices=("none", "quantile", "robust_zscore"),
+    )
+    parser.add_argument("--pdn_filter_value", type=float, default=0.99)
     args = parser.parse_args()
 
     result = plot_source_target_wasserstein_bars(
@@ -1246,6 +1355,8 @@ def main() -> None:
         batch_size=args.analysis_batch_size,
         num_worker=args.analysis_num_worker,
         num_samples=args.analysis_num_samples,
+        pdn_filter_method=args.pdn_filter_method,
+        pdn_filter_value=args.pdn_filter_value,
     )
     print(json.dumps(_summarize_result_for_stdout(result), indent=2, ensure_ascii=False))
 

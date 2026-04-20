@@ -10,8 +10,8 @@ export CUDA_DEVICE_ORDER=PCI_BUS_ID
 
 MANIFEST_PATH="${MANIFEST_PATH:-${SCRIPT_DIR}/source_target_manifest.json}"
 OUTPUT_DIR="${OUTPUT_DIR:-./results/analysis/source_target_w1_bars}"
-OUTPUT_PATH="${OUTPUT_PATH:-${OUTPUT_DIR}/source_target_w1_bars.pdf}"
-METADATA_PATH="${METADATA_PATH:-${OUTPUT_DIR}/source_target_w1_bars.json}"
+OUTPUT_PATH="${OUTPUT_PATH:-${OUTPUT_DIR}/source_target_w1_bars_scaled_all.pdf}"
+METADATA_PATH="${METADATA_PATH:-${OUTPUT_DIR}/source_target_w1_bars_scaled_all.json}"
 SEED="${SEED:-42}"
 DEVICE="${DEVICE:-cuda:0}"
 MAX_POINTS="${MAX_POINTS:-50000}"
@@ -20,6 +20,8 @@ EPS="${EPS:-1e-6}"
 ANALYSIS_BATCH_SIZE="${ANALYSIS_BATCH_SIZE:-64}"
 ANALYSIS_NUM_WORKER="${ANALYSIS_NUM_WORKER:-4}"
 ANALYSIS_NUM_SAMPLES="${ANALYSIS_NUM_SAMPLES:-16}"
+PDN_FILTER_METHOD="${PDN_FILTER_METHOD:-none}"
+PDN_FILTER_VALUE="${PDN_FILTER_VALUE:-0.99}"
 
 if [ ! -f "${MANIFEST_PATH}" ]; then
     echo "Missing manifest: ${MANIFEST_PATH}"
@@ -50,6 +52,14 @@ fi
 
 if [ -n "${ANALYSIS_NUM_SAMPLES:-}" ]; then
     CMD+=(--analysis_num_samples "${ANALYSIS_NUM_SAMPLES}")
+fi
+
+if [ -n "${PDN_FILTER_METHOD:-}" ]; then
+    CMD+=(--pdn_filter_method "${PDN_FILTER_METHOD}")
+fi
+
+if [ -n "${PDN_FILTER_VALUE:-}" ]; then
+    CMD+=(--pdn_filter_value "${PDN_FILTER_VALUE}")
 fi
 
 "${CMD[@]}"

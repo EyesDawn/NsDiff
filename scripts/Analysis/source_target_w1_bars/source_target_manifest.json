@@ -5,20 +5,20 @@
       "methods": {
         "TimeGrad": {
           "config_run_dir": "/workspace/backup/NsDiff/results/runs/F/ETTh1/w92h1s192/1",
-          "space": "origin"
+          "space": "scaled"
         },
         "TMDM": {
           "mu_run_dir": "/workspace/backup/NsDiff/results/runs/F/ETTh1/w92h1s192/1",
-          "space": "origin"
+          "space": "scaled"
         },
         "NsDiff": {
           "mu_run_dir": "/workspace/backup/NsDiff/results/runs/F/ETTh1/w92h1s192/1",
           "sigma_run_dir": "/workspace/backup/NsDiff/results/runs/G/ETTh1/w92h1s192/1",
-          "space": "origin"
+          "space": "scaled"
         },
         "PDN-Flow": {
           "run_dir": "/workspace/backup/NsDiff/results/runs/iReflow/ETTh1/w96h1s192/2ed7d7e7ac6b47483bc3bdfbb1f8ac4f",
-          "space": "pdn"
+          "space": "scaled"
         }
       }
     },
@@ -27,20 +27,20 @@
       "methods": {
         "TimeGrad": {
           "config_run_dir": "/workspace/backup/NsDiff/results/runs/F/Weather/w96h1s192/1",
-          "space": "origin"
+          "space": "scaled"
         },
         "TMDM": {
           "mu_run_dir": "/workspace/backup/NsDiff/results/runs/F/Weather/w96h1s192/1",
-          "space": "origin"
+          "space": "scaled"
         },
         "NsDiff": {
           "mu_run_dir": "/workspace/backup/NsDiff/results/runs/F/Weather/w96h1s192/1",
           "sigma_run_dir": "/workspace/backup/NsDiff/results/runs/G/Weather/w96h1s192/1",
-          "space": "origin"
+          "space": "scaled"
         },
         "PDN-Flow": {
-          "run_dir": "/workspace/backup/NsDiff/results/runs/iReflow/Weather/w96h1s192/0bd61f16f9acbd94069160e87bd82de5",
-          "space": "pdn"
+          "run_dir": "/workspace/backup/NsDiff/results/runs/iReflow/Weather/w96h1s192/9dea8bce7c77076cd3239db4195eb958/train_mode_1",
+          "space": "scaled"
         }
       }
     },
@@ -50,20 +50,20 @@
       "methods": {
         "TimeGrad": {
           "config_run_dir": "/workspace/backup/NsDiff/results/runs/F/Electricity/w96h1s192/1",
-          "space": "origin"
+          "space": "scaled"
         },
         "TMDM": {
           "mu_run_dir": "/workspace/backup/NsDiff/results/runs/F/Electricity/w96h1s192/1",
-          "space": "origin"
+          "space": "scaled"
         },
         "NsDiff": {
           "mu_run_dir": "/workspace/backup/NsDiff/results/runs/F/Electricity/w96h1s192/1",
           "sigma_run_dir": "/workspace/backup/NsDiff/results/runs/G/Electricity/w96h1s192/1",
-          "space": "origin"
+          "space": "scaled"
         },
         "PDN-Flow": {
-          "run_dir": "/workspace/backup/NsDiff/results/runs/iReflow/Electricity/w96h1s192/00c7e60eca1ad0bfdd41b229d062d8d2",
-          "space": "pdn"
+          "run_dir": "/workspace/backup/NsDiff/results/runs/iReflow/Electricity/w96h1s192/d6372fd2601757a0d2f9795b84b5e314/train_mode_1",
+          "space": "scaled"
         }
       }
     }

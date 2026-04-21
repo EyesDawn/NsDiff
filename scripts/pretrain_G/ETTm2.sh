@@ -6,7 +6,7 @@ python3 ./src/experiments/pretrain_g.py \
    --batch_size=32 \
    --horizon=1 \
    --pred_len=192 \
-   --windows=168 \
+   --windows=96 \
    --epochs=20 \
    --patience=5 \
    runs --seeds='[1]'

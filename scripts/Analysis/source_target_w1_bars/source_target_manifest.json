@@ -1,23 +1,24 @@
 {
   "datasets": [
     {
-      "name": "ETTm1",
+      "name": "SolarEnergy",
+      "display_name": "Solar",
       "methods": {
         "TimeGrad": {
-          "config_run_dir": "/workspace/backup/NsDiff/results/runs/F/ETTm1/w96h1s192/1",
+          "config_run_dir": "/workspace/backup/NsDiff/results/runs/F/SolarEnergy/w96h1s192/1",
           "space": "scaled"
         },
         "TMDM": {
-          "mu_run_dir": "/workspace/backup/NsDiff/results/runs/F/ETTm1/w96h1s192/1",
+          "mu_run_dir": "/workspace/backup/NsDiff/results/runs/F/SolarEnergy/w96h1s192/1",
           "space": "scaled"
         },
         "NsDiff": {
-          "mu_run_dir": "/workspace/backup/NsDiff/results/runs/F/ETTm1/w96h1s192/1",
-          "sigma_run_dir": "/workspace/backup/NsDiff/results/runs/G/ETTm1/w96h1s192/1",
+          "mu_run_dir": "/workspace/backup/NsDiff/results/runs/F/SolarEnergy/w96h1s192/1",
+          "sigma_run_dir": "/workspace/backup/NsDiff/results/runs/G/SolarEnergy/w96h1s192/1",
           "space": "scaled"
         },
         "PDN-Flow": {
-          "run_dir": "/workspace/backup/NsDiff/results/runs/iReflow/ETTm1/w96h1s192/8c78caa1341054d7d68a874814ab9ec9/train_mode_1",
+          "run_dir": "/workspace/backup/NsDiff/results/runs/iReflow/SolarEnergy/w96h1s192/c6b9d010e48e367adf134ab865fb97fa/train_mode_1",
           "space": "scaled"
         }
       }

@@ -26,6 +26,7 @@ wandb
 tmp_analysis_test
 docs/paper
 249-container.txt
+fig/example/
 
 # dataset suffix
 *.txt.gz

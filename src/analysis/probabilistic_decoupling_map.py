@@ -27,7 +27,7 @@ Example manifest:
     {"name": "TimeDiff", "path": ".../timediff_samples.npz"},
     {"name": "NsDiff", "path": ".../nsdiff_samples.npz"},
     {"name": "TMDM", "path": ".../tmdm_samples.npz"},
-    {"name": "PDN-Flow", "path": ".../ireflow_samples.npz"}
+    {"name": "LS-Flow", "path": ".../ireflow_samples.npz"}
   ]
 }
 """
@@ -59,6 +59,7 @@ DEFAULT_MARKERS = {
     "NsDiff": "D",
     "TMDM": "p",
     "PDN-Flow": "*",
+    "LS-Flow": "*",
     "iReflow": "*",
 }
 
@@ -69,6 +70,7 @@ DEFAULT_COLORS = {
     "NsDiff": "#F58518",
     "TMDM": "#ECA82C",
     "PDN-Flow": "#D62728",
+    "LS-Flow": "#D62728",
     "iReflow": "#D62728",
 }
 
@@ -79,11 +81,14 @@ DEFAULT_FAMILY = {
     "NsDiff": "informative_prior",
     "TMDM": "informative_prior",
     "PDN-Flow": "pdn_flow",
+    "LS-Flow": "pdn_flow",
     "iReflow": "pdn_flow",
 }
 
 DISPLAY_ALIASES = {
-    "iReflow": "PDN-Flow",
+    "iReflow": "LS-Flow",
+    "PDN-Flow": "LS-Flow",
+    "LS-Flow": "LS-Flow",
 }
 
 
@@ -132,6 +137,7 @@ class MethodScores:
     macro_mid: np.ndarray
     micro_mid: np.ndarray
     centroids: Dict[str, Tuple[float, float]]
+    merged_centroid: Tuple[float, float]
 
 
 def _configure_style() -> None:
@@ -142,11 +148,11 @@ def _configure_style() -> None:
             "axes.spines.top": True,
             "axes.spines.right": True,
             "axes.linewidth": 1.15,
-            "axes.labelsize": 16,
-            "axes.titlesize": 16,
-            "xtick.labelsize": 14,
-            "ytick.labelsize": 14,
-            "legend.fontsize": 13,
+            "axes.labelsize": 18,
+            "axes.titlesize": 18,
+            "xtick.labelsize": 16,
+            "ytick.labelsize": 16,
+            "legend.fontsize": 15,
             "savefig.dpi": 600,
         }
     )
@@ -183,7 +189,7 @@ def _load_manifest(manifest_path: str) -> Tuple[str, List[MethodSpec]]:
         if "name" not in item or "path" not in item:
             raise ValueError("Each method entry must contain `name` and `path`.")
         name = str(item["name"])
-        display_name = str(item.get("display_name", _normalize_display_name(name)))
+        display_name = _normalize_display_name(str(item.get("display_name", name)))
         methods.append(
             MethodSpec(
                 name=name,
@@ -572,6 +578,10 @@ def _compute_method_scores(
         macro_mid=macro_all[mid_idx],
         micro_mid=micro_all[mid_idx],
         centroids=centroids,
+        merged_centroid=(
+            float(np.mean(macro_all[plot_idx])),
+            float(np.mean(micro_all[plot_idx])),
+        ),
     )
 
 
@@ -595,6 +605,24 @@ def _compute_centroid_axis_limits(
             pad = 0.05 * max(abs(vmin), 1.0)
             return vmin - pad, vmax + pad
         pad = 0.06 * (vmax - vmin)
+        return vmin - pad, vmax + pad
+
+    return _limits(x_all), _limits(y_all)
+
+
+def _compute_merged_centroid_axis_limits(
+    method_scores: Sequence[MethodScores],
+) -> Tuple[Tuple[float, float], Tuple[float, float]]:
+    x_all = np.asarray([item.merged_centroid[0] for item in method_scores], dtype=np.float32)
+    y_all = np.asarray([item.merged_centroid[1] for item in method_scores], dtype=np.float32)
+
+    def _limits(values: np.ndarray) -> Tuple[float, float]:
+        vmin = float(np.min(values))
+        vmax = float(np.max(values))
+        if math.isclose(vmin, vmax):
+            pad = 0.05 * max(abs(vmin), 1.0)
+            return vmin - pad, vmax + pad
+        pad = 0.10 * (vmax - vmin)
         return vmin - pad, vmax + pad
 
     return _limits(x_all), _limits(y_all)
@@ -704,7 +732,7 @@ def _add_better_arrow(ax: plt.Axes) -> None:
         xytext=(0.20, 0.22),
         xycoords="axes fraction",
         textcoords="axes fraction",
-        fontsize=13.5,
+        fontsize=15.5,
         color="#666666",
         arrowprops=dict(arrowstyle="->", color="#B0B0B0", lw=2.1),
     )
@@ -770,46 +798,21 @@ def _plot_decoupling_map(
     _apply_axis_style(ax)
 
 
-def _plot_centroid_shift(
+def _plot_merged_centroid_map(
     ax: plt.Axes,
     method_scores: Sequence[MethodScores],
     xlim: Tuple[float, float],
     ylim: Tuple[float, float],
 ) -> None:
     for item in method_scores:
-        xs = [
-            item.centroids["low"][0],
-            item.centroids["mid"][0],
-        ]
-        ys = [
-            item.centroids["low"][1],
-            item.centroids["mid"][1],
-        ]
-        ax.plot(xs, ys, color=item.spec.color, lw=2.3, alpha=0.95, zorder=2)
-        ax.annotate(
-            "",
-            xy=(xs[1], ys[1]),
-            xytext=(xs[0], ys[0]),
-            arrowprops=dict(arrowstyle="->", color=item.spec.color, lw=2.1, alpha=0.95),
-        )
         ax.scatter(
-            [xs[0]],
-            [ys[0]],
-            s=92,
-            facecolors="none",
-            edgecolors=item.spec.color,
-            marker=item.spec.marker,
-            linewidths=1.9,
-            zorder=3,
-        )
-        ax.scatter(
-            [xs[1]],
-            [ys[1]],
-            s=235 if item.spec.marker != "*" else 300,
+            [item.merged_centroid[0]],
+            [item.merged_centroid[1]],
+            s=250 if item.spec.marker != "*" else 320,
             color=item.spec.color,
             marker=item.spec.marker,
             edgecolors="black",
-            linewidths=1.15,
+            linewidths=1.2,
             zorder=5,
         )
 
@@ -831,7 +834,7 @@ def _build_legend(method_scores: Sequence[MethodScores]) -> List[Line2D]:
                 color=item.spec.color,
                 markerfacecolor=item.spec.color,
                 markeredgecolor="black" if item.spec.marker == "*" else item.spec.color,
-                markersize=11.5 if item.spec.marker != "*" else 13.5,
+                markersize=13.0 if item.spec.marker != "*" else 15.0,
                 linewidth=2.3,
                 label=item.spec.display_name,
             )
@@ -844,9 +847,9 @@ def _reorder_legend_handles(handles: Sequence[Line2D]) -> List[Line2D]:
     preferred_order = [
         "TimeGrad",
         "TimeDiff",
-        "NsDiff",
         "TMDM",
-        "PDN-Flow",
+        "NsDiff",
+        "LS-Flow",
     ]
     reordered = [handle_map[name] for name in preferred_order if name in handle_map]
     seen = {handle.get_label() for handle in reordered}
@@ -871,21 +874,71 @@ def _add_panel_legend(
         framealpha=0.95,
         edgecolor="#D0D0D0",
         facecolor="white",
-        borderpad=0.55,
-        labelspacing=0.45,
-        handlelength=1.9,
-        handletextpad=0.55,
-        columnspacing=1.0,
+        borderpad=0.65,
+        labelspacing=0.55,
+        handlelength=2.0,
+        handletextpad=0.60,
+        columnspacing=1.15,
     )
+
+
+def _method_output_path(output_path: str, label: str) -> str:
+    out_dir = os.path.dirname(output_path)
+    base_name = os.path.basename(output_path)
+    stem, ext = os.path.splitext(base_name)
+    if not ext:
+        ext = ".pdf"
+    safe_label = "".join(ch.lower() if ch.isalnum() else "_" for ch in label).strip("_")
+    safe_label = "_".join(filter(None, safe_label.split("_")))
+    return os.path.join(out_dir, f"{stem}_{safe_label}{ext}")
+
+
+def _save_per_method_decoupling_maps(
+    output_path: str,
+    method_scores: Sequence[MethodScores],
+    global_median: Tuple[float, float],
+    xlim: Tuple[float, float],
+    ylim: Tuple[float, float],
+    x_scale: float,
+) -> Dict[str, str]:
+    output_paths: Dict[str, str] = {}
+    for item in method_scores:
+        fig, ax = plt.subplots(1, 1, figsize=(7.2, 5.8), constrained_layout=True)
+        _plot_decoupling_map(
+            ax=ax,
+            method_scores=[item],
+            global_median=global_median,
+            xlim=xlim,
+            ylim=ylim,
+            x_scale=x_scale,
+        )
+        _add_panel_legend(
+            ax=ax,
+            handles=_build_legend([item]),
+            loc="lower right",
+            bbox_to_anchor=(0.985, 0.03),
+            ncol=1,
+        )
+        method_path = _method_output_path(output_path, item.spec.display_name)
+        fig.savefig(method_path, dpi=600, bbox_inches="tight")
+        plt.close(fig)
+        output_paths[item.spec.display_name] = method_path
+    return output_paths
 
 
 def _scores_to_metadata(
     dataset_name: str,
     selected: SelectedPairs,
     method_scores: Sequence[MethodScores],
+    right_plot_path: str,
+    left_plot_paths: Dict[str, str],
 ) -> Dict[str, Any]:
     metadata = {
         "dataset_name": dataset_name,
+        "right_plot_path": os.path.abspath(right_plot_path),
+        "left_plot_paths": {
+            method_name: os.path.abspath(path) for method_name, path in left_plot_paths.items()
+        },
         "selected_feature_dims": selected.selected_dims.tolist(),
         "num_pairs": int(selected.drift_scores.shape[0]),
         "num_low_pairs": int(selected.low_pair_indices.shape[0]),
@@ -901,6 +954,10 @@ def _scores_to_metadata(
             "mid_drift_centroid": {
                 "macro": float(np.mean(item.macro_mid)),
                 "micro": float(np.mean(item.micro_mid)),
+            },
+            "merged_low_mid_centroid": {
+                "macro": float(item.merged_centroid[0]),
+                "micro": float(item.merged_centroid[1]),
             },
             "centroids": {
                 key: {"macro": float(value[0]), "micro": float(value[1])}
@@ -960,46 +1017,52 @@ def run_analysis(
         )
 
     left_xlim, left_ylim, left_x_scale = _compute_scatter_axis_limits(scores)
-    right_xlim, right_ylim = _compute_centroid_axis_limits(scores)
+    right_xlim, right_ylim = _compute_merged_centroid_axis_limits(scores)
     medians = _compute_global_medians(scores)
     left_global_median = (
         float(_asinh_transform(np.asarray([medians[0]], dtype=np.float32), left_x_scale)[0]),
         medians[1],
     )
 
-    fig, axes = plt.subplots(1, 2, figsize=(13.6, 6.0), constrained_layout=False)
-    _plot_decoupling_map(
-        ax=axes[0],
+    out_dir = os.path.dirname(output_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
+    left_plot_paths = _save_per_method_decoupling_maps(
+        output_path=output_path,
         method_scores=scores,
         global_median=left_global_median,
         xlim=left_xlim,
         ylim=left_ylim,
         x_scale=left_x_scale,
     )
-    _plot_centroid_shift(
-        ax=axes[1],
+
+    fig, ax = plt.subplots(1, 1, figsize=(8.4, 6.4), constrained_layout=True)
+    _plot_merged_centroid_map(
+        ax=ax,
         method_scores=scores,
         xlim=right_xlim,
         ylim=right_ylim,
     )
-
     handles = _reorder_legend_handles(_build_legend(scores))
     _add_panel_legend(
-        ax=axes[1],
+        ax=ax,
         handles=handles,
         loc="lower right",
         bbox_to_anchor=(0.985, 0.03),
-        ncol=3,
+        ncol=2,
     )
-    fig.tight_layout(w_pad=2.0)
 
-    out_dir = os.path.dirname(output_path)
-    if out_dir:
-        os.makedirs(out_dir, exist_ok=True)
     fig.savefig(output_path, dpi=600, bbox_inches="tight")
     plt.close(fig)
 
-    metadata = _scores_to_metadata(dataset_name=dataset_name, selected=selected, method_scores=scores)
+    metadata = _scores_to_metadata(
+        dataset_name=dataset_name,
+        selected=selected,
+        method_scores=scores,
+        right_plot_path=output_path,
+        left_plot_paths=left_plot_paths,
+    )
     if metadata_path:
         metadata_dir = os.path.dirname(metadata_path)
         if metadata_dir:

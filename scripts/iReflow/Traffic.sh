@@ -49,7 +49,7 @@ GPU_ID=0
 export CUDA_VISIBLE_DEVICES=${GPU_ID}
 DEVICE="cuda:0"
 
-SEEDS='[2028, 2029]'
+SEEDS='[2028]'
 CHECKPOINTS="./results/runs/iTransformer/"
 ITR=1
 
@@ -117,8 +117,7 @@ STAGE3_CHECKPOINTS="./results/runs/iTransformer/"
 STAGE3_LR=5e-5
 
 python3 -u ./src/experiments/iReflow.py \
-    --is_training 1 \
-    --wandb_project ${STAGE3_WANDB_PROJECT} \
+    --is_training 0 \
     --root_path ${ROOT_PATH} \
     --data_path ${DATA_PATH} \
     --model_id ${MODEL_ID} \
@@ -150,6 +149,7 @@ python3 -u ./src/experiments/iReflow.py \
     --device ${DEVICE} \
     --use_relative_space ${USE_RELATIVE_SPACE} \
     --x0_dist ${X0_DIST} \
+    --eval_micro_batch_size 1 \
     runs --seeds="${SEEDS}"
 
 echo ""

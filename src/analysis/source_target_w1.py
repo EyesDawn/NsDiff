@@ -6,7 +6,7 @@ This experiment compares four methods under the source/target definitions:
 1. TimeGrad:    source = N(0, I),                    target = Y in origin space
 2. TMDM:        source = N(mu_Y_hat, I),             target = Y in origin space
 3. NsDiff:      source = N(mu_Y_hat, sigma_Y_hat^2), target = Y in origin space
-4. PDN-Flow:    source/target measured in PDN, scaled, or origin space
+4. LS-Flow:     source/target measured in PDN, scaled, or origin space
 
 For each test window, we treat the observed target window as a Dirac conditional
 target distribution and estimate W1(source | x, delta_target | x) with the
@@ -17,7 +17,7 @@ The manifest supports explicit per-method run paths:
   - TimeGrad: `config_run_dir`
   - TMDM: `mu_run_dir`
   - NsDiff: `mu_run_dir` + `sigma_run_dir`
-  - PDN-Flow: `run_dir`
+  - LS-Flow: `run_dir`
 """
 
 from __future__ import annotations
@@ -44,22 +44,24 @@ except ImportError:
 FONT_SCALE = 1.2
 PCA_TEXT_SIZE = 12 * FONT_SCALE
 
-SOURCE_TARGET_METHOD_ORDER = ("TimeGrad", "TMDM", "NsDiff", "PDN-Flow")
+SOURCE_TARGET_METHOD_ORDER = ("TimeGrad", "TMDM", "NsDiff", "LS-Flow")
 SOURCE_TARGET_METHOD_COLORS = {
     "TimeGrad": "#4C78A8",
     "TMDM": "#ECA82C",
     "NsDiff": "#F58518",
-    "PDN-Flow": "#D62728",
+    "LS-Flow": "#D62728",
 }
 SOURCE_TARGET_METHOD_HATCHES = {
     "TimeGrad": "ooo",
     "TMDM": "////",
     "NsDiff": "xx",
-    "PDN-Flow": "***",
+    "LS-Flow": "***",
 }
 SOURCE_TARGET_DISPLAY_ALIASES = {
     "NsDiff4": "NsDiff",
-    "iReflow": "PDN-Flow",
+    "iReflow": "LS-Flow",
+    "PDN-Flow": "LS-Flow",
+    "LS-Flow": "LS-Flow",
 }
 SOURCE_TARGET_CLASS_REGISTRY: dict[str, str] = {
     "TimeGrad": "src.experiments.TimeGrad:TimeGradForecast",
@@ -68,6 +70,7 @@ SOURCE_TARGET_CLASS_REGISTRY: dict[str, str] = {
     "NsDiff": "src.experiments.NsDiff:NsDiffForecast",
     "iReflow": "src.experiments.iReflow:iReflowExp",
     "PDN-Flow": "src.experiments.iReflow:iReflowExp",
+    "LS-Flow": "src.experiments.iReflow:iReflowExp",
     "F": "src.experiments.pretrain_f:FForecast",
     "G": "src.experiments.pretrain_g:GForecast",
 }
@@ -152,7 +155,7 @@ def _normalize_source_target_method_name(name: str) -> str:
 
 def _default_source_target_space(method_name: str) -> str:
     normalized = _normalize_source_target_method_name(method_name)
-    if normalized == "PDN-Flow":
+    if normalized == "LS-Flow":
         return "pdn"
     return "origin"
 
@@ -191,8 +194,8 @@ def _load_source_target_manifest(manifest_path: str) -> list[SourceTargetDataset
             if "name" not in method_cfg:
                 raise ValueError(f"Dataset `{dataset_name}` has a method entry without `name`.")
             raw_name = str(method_cfg["name"])
-            display_name = str(
-                method_cfg.get("display_name", _normalize_source_target_method_name(raw_name))
+            display_name = _normalize_source_target_method_name(
+                str(method_cfg.get("display_name", raw_name))
             )
             run_dir = str(method_cfg.get("run_dir", "")).strip() or None
             config_run_dir = str(method_cfg.get("config_run_dir", "")).strip() or None
@@ -200,7 +203,7 @@ def _load_source_target_manifest(manifest_path: str) -> list[SourceTargetDataset
             sigma_run_dir = str(method_cfg.get("sigma_run_dir", "")).strip() or None
             space = str(method_cfg.get("space", _default_source_target_space(display_name))).lower()
 
-            if display_name == "PDN-Flow":
+            if display_name == "LS-Flow":
                 if run_dir is None:
                     raise ValueError(
                         f"Dataset `{dataset_name}` / method `{display_name}` is missing `run_dir`."
@@ -641,7 +644,7 @@ def _prepare_legacy_source_target_batch(
             raise ValueError(f"Unsupported comparison space for NsDiff: {space}")
         return target, source_mean, source_std
 
-    if display_name == "PDN-Flow":
+    if display_name == "LS-Flow":
         _, y_hat, sigma = exp.model.get_encoder_features(batch_x, batch_x_date_enc)
         y_hat = y_hat[:, :, feature_slice]
         sigma = torch.clamp_min(sigma[:, :, feature_slice], eps)
@@ -662,7 +665,7 @@ def _prepare_legacy_source_target_batch(
             )
         else:
             raise ValueError(
-                f"Unsupported comparison space for PDN-Flow: {space}. "
+                f"Unsupported comparison space for LS-Flow: {space}. "
                 "Expected one of: pdn, scaled, origin."
             )
         return target, source_mean, source_std
@@ -734,9 +737,9 @@ def _collect_source_target_reservoir(
     exp = None
     aux_exp_sigma = None
 
-    if method_spec.display_name == "PDN-Flow":
+    if method_spec.display_name == "LS-Flow":
         if method_spec.run_dir is None:
-            raise ValueError("PDN-Flow requires `run_dir`.")
+            raise ValueError("LS-Flow requires `run_dir`.")
         exp, model_type = _get_or_create_source_target_experiment(
             run_dir=method_spec.run_dir,
             seed=seed,
@@ -1110,7 +1113,7 @@ def _plot_source_target_wasserstein_bars(
     dataset_results: Sequence[dict[str, Any]],
     output_path: str,
 ) -> None:
-    fig, ax = plt.subplots(figsize=(7.8, 4.6), dpi=600, constrained_layout=True)
+    fig, ax = plt.subplots(figsize=(8.0, 6.0), dpi=600, constrained_layout=True)
     x = np.arange(len(dataset_specs), dtype=np.float64)
     width = 0.17
     offsets = np.array([-1.5, -0.5, 0.5, 1.5], dtype=np.float64) * width
@@ -1147,7 +1150,7 @@ def _plot_source_target_wasserstein_bars(
         )
         ax.errorbar(x_pos, heights, yerr=errors, **errorbar_style)
 
-    ax.set_ylabel("Mean Conditional W1 to Target")
+    ax.set_ylabel("Mean W1 to Target")
     ax.set_xticks(x)
     ax.set_xticklabels([spec.display_name for spec in dataset_specs])
     ax.xaxis.label.set_size(PCA_TEXT_SIZE)
@@ -1312,14 +1315,14 @@ def plot_source_target_wasserstein_bars(
             )
             pdn_filter_info = None
             pdn_sigma_filter_info = None
-            if method_spec.display_name == "PDN-Flow" and method_spec.space != "pdn":
+            if method_spec.display_name == "LS-Flow" and method_spec.space != "pdn":
                 reservoir, pdn_sigma_filter_info = _filter_pdn_sigma_windows(
                     reservoir=reservoir,
                     filter_method=pdn_sigma_filter_method,
                     lower_value=pdn_sigma_filter_lower,
                     upper_value=pdn_sigma_filter_upper,
                 )
-            if method_spec.display_name == "PDN-Flow" and method_spec.space == "pdn":
+            if method_spec.display_name == "LS-Flow" and method_spec.space == "pdn":
                 reservoir, pdn_filter_info = _filter_pdn_outlier_windows(
                     reservoir=reservoir,
                     filter_method=pdn_filter_method,

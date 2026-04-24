@@ -489,6 +489,15 @@ class NsDiffForecast(ProbForecastExp, NsDiffParameters):
         assert (outs.shape[1], outs.shape[2], outs.shape[3]) == (self.pred_len, self.dataset.num_features, self.diffusion_config.testing.n_z_samples)
         return outs, batch_y
 
+    def init_data_loader_and_test(self, shuffle=False, fast_test=True, fast_val=True) -> Dict[str, float]:
+        """Convenience CLI entrypoint for Fire: initialize loaders, then evaluate on test."""
+        self._init_data_loader(
+            shuffle=shuffle,
+            fast_test=fast_test,
+            fast_val=fast_val,
+        )
+        return self._test()
+
     def run(self, seed=42) -> Dict[str, float]:
         
         if self._use_wandb() and not self._init_wandb(self.project, seed): return {}

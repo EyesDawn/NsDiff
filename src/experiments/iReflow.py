@@ -446,6 +446,9 @@ class iReflowExp(ProbForecastExp):
                         mb_origin_y = mb_origin_y.to(self.device).float()
                         mb_x_date_enc = mb_x_date_enc.to(self.device).float()
 
+                        # start = time.time()
+                        # print(batch_x.shape)
+                        # print(batch_x_date_enc.shape)
                         # 生成采样预测 + 点预测与 sigma
                         samples, y_hat, sigma, z_samples, x_samples = self.model.forecast(
                             x_enc=mb_x,
@@ -454,6 +457,9 @@ class iReflowExp(ProbForecastExp):
                             temperature=self.temperature,
                             return_trajs=plot,
                         )  # samples: [B, S, P, D], y_hat/sigma: [B, P, D]
+                        # end = time.time()
+                        # print(end-start)
+                        # assert 0
 
                         # 采样型概率指标：转换为 [B, P, D, S]
                         preds = samples.permute(0, 2, 3, 1).contiguous()

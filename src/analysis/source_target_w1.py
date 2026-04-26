@@ -41,7 +41,7 @@ except ImportError:
     sns = None
 
 
-FONT_SCALE = 1.2
+FONT_SCALE = 1.7
 PCA_TEXT_SIZE = 12 * FONT_SCALE
 
 SOURCE_TARGET_METHOD_ORDER = ("TimeGrad", "TMDM", "NsDiff", "LS-Flow")
@@ -1194,6 +1194,81 @@ def _plot_source_target_wasserstein_bars(
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     fig.savefig(output_path, bbox_inches="tight")
     plt.close(fig)
+
+
+def redraw_source_target_wasserstein_bars_from_metadata(
+    metadata_path: str,
+    output_path: str,
+) -> dict[str, Any]:
+    _configure_style()
+
+    with open(metadata_path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+
+    dataset_payloads = payload.get("datasets", [])
+    if not dataset_payloads:
+        raise ValueError(f"No datasets found in metadata: {metadata_path}")
+
+    dataset_specs: list[SourceTargetDatasetSpec] = []
+    dataset_results: list[dict[str, Any]] = []
+
+    for dataset_payload in dataset_payloads:
+        display_name = str(
+            dataset_payload.get("display_name", dataset_payload.get("dataset_name", "Dataset"))
+        )
+        dataset_name = str(dataset_payload.get("dataset_name", display_name))
+        raw_methods = dataset_payload.get("methods", {})
+        if not raw_methods:
+            raise ValueError(f"Dataset `{dataset_name}` has empty `methods` in metadata.")
+
+        normalized_methods: dict[str, Any] = {}
+        for raw_method_name, method_payload in raw_methods.items():
+            normalized_name = _normalize_source_target_method_name(str(raw_method_name))
+            normalized_methods[normalized_name] = method_payload
+
+        missing_methods = [
+            method_name
+            for method_name in SOURCE_TARGET_METHOD_ORDER
+            if method_name not in normalized_methods
+        ]
+        if missing_methods:
+            raise ValueError(
+                f"Dataset `{dataset_name}` is missing required methods in metadata: {missing_methods}."
+            )
+
+        dataset_specs.append(
+            SourceTargetDatasetSpec(
+                name=dataset_name,
+                display_name=display_name,
+                methods=[],
+            )
+        )
+        dataset_results.append(
+            {
+                "dataset_name": dataset_name,
+                "display_name": display_name,
+                "methods": normalized_methods,
+            }
+        )
+
+    _plot_source_target_wasserstein_bars(
+        dataset_specs=dataset_specs,
+        dataset_results=dataset_results,
+        output_path=output_path,
+    )
+
+    return {
+        "analysis": "source_target_conditional_wasserstein_bars_redraw",
+        "metadata_path": os.path.abspath(metadata_path),
+        "output_path": os.path.abspath(output_path),
+        "datasets": [
+            {
+                "dataset_name": item["dataset_name"],
+                "display_name": item["display_name"],
+            }
+            for item in dataset_results
+        ],
+    }
 
 
 def _save_source_target_metadata(

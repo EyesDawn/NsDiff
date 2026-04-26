@@ -148,11 +148,11 @@ def _configure_style() -> None:
             "axes.spines.top": True,
             "axes.spines.right": True,
             "axes.linewidth": 1.15,
-            "axes.labelsize": 18,
-            "axes.titlesize": 18,
-            "xtick.labelsize": 16,
-            "ytick.labelsize": 16,
-            "legend.fontsize": 15,
+            "axes.labelsize": 24,
+            "axes.titlesize": 24,
+            "xtick.labelsize": 20,
+            "ytick.labelsize": 20,
+            "legend.fontsize": 19,
             "savefig.dpi": 600,
         }
     )
@@ -732,7 +732,7 @@ def _add_better_arrow(ax: plt.Axes) -> None:
         xytext=(0.20, 0.22),
         xycoords="axes fraction",
         textcoords="axes fraction",
-        fontsize=15.5,
+        fontsize=22,
         color="#666666",
         arrowprops=dict(arrowstyle="->", color="#B0B0B0", lw=2.1),
     )
@@ -763,7 +763,7 @@ def _plot_decoupling_map(
         ax.scatter(
             x_plot,
             item.micro_plot,
-            s=34,
+            s=50,
             alpha=0.8,
             color=item.spec.color,
             marker=item.spec.marker,
@@ -775,7 +775,7 @@ def _plot_decoupling_map(
         ax.scatter(
             [centroid_x],
             [centroid_y],
-            s=235 if item.spec.marker != "*" else 300,
+            s=400 if item.spec.marker != "*" else 600,
             color=item.spec.color,
             marker=item.spec.marker,
             edgecolors="black",
@@ -808,7 +808,7 @@ def _plot_merged_centroid_map(
         ax.scatter(
             [item.merged_centroid[0]],
             [item.merged_centroid[1]],
-            s=250 if item.spec.marker != "*" else 320,
+            s=400 if item.spec.marker != "*" else 600,
             color=item.spec.color,
             marker=item.spec.marker,
             edgecolors="black",
@@ -834,7 +834,7 @@ def _build_legend(method_scores: Sequence[MethodScores]) -> List[Line2D]:
                 color=item.spec.color,
                 markerfacecolor=item.spec.color,
                 markeredgecolor="black" if item.spec.marker == "*" else item.spec.color,
-                markersize=13.0 if item.spec.marker != "*" else 15.0,
+                markersize=17.0 if item.spec.marker != "*" else 19.0,
                 linewidth=2.3,
                 label=item.spec.display_name,
             )

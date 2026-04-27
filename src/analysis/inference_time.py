@@ -21,17 +21,17 @@ plt.rcParams.update({
 # mse = [0.300, 0.316, 0.413, 0.469, 0.663, 1.298]
 # crps = [0.246, 0.257, 0.327, 0.383, 0.487, 0.689]
 
-mse = [0.444, 0.629, 0.721, 1.465, 0.932]
-crps = [0.229, 0.378, 0.557, 0.671, 0.657]
+mse = [0.444, 0.468, 0.629, 0.721, 1.465, 0.932]
+crps = [0.229, 0.237, 0.378, 0.557, 0.671, 0.657]
 # qice = [1.24, 0.78, 2.35, 14.82, 5.03, 3.04, 5.12]
 # time = [0.11, 0.27, 11.54]
 # sizes = [0.11, 0.42, 11.54, 30.45, 88.70, 83, 24.82]
-sizes = [2.72, 2.34, 11.20, 117.65, 34.92]
+sizes = [2.72, 10.49, 2.34, 11.20, 117.65, 34.92]
 bubble_scale = 100
 sizes = [i * bubble_scale for i in sizes]
 
-labels = ['LS-Flow', 'NsDiff', 'TMDM', 'TimeDiff', 'TimeGrad']
-colors = ["#C32340", "#206060", "#44C39B", "#D8B365", "#185395", ]
+labels = ['LS-Flow', '$\mathrm{D}^3\mathrm{U}$', 'NsDiff', 'TMDM', 'TimeDiff', 'TimeGrad']
+colors = ["#C32340", "#D8B365", "#206060", "#44C39B", "#B4512D", "#185395", ]
 
 y = mse
 x = crps
@@ -58,10 +58,10 @@ plot_order = sorted(range(len(x)), key=lambda i: sizes[i], reverse=True)
 for i in plot_order:
     plt.scatter(
         x[i], y[i], color=colors[i], s=sizes[i], alpha=0.82,
-        edgecolors='white', linewidths=0.75, zorder=3
+        edgecolors='none', linewidths=0, zorder=3
     )
 
-legend_handles = [plt.scatter([], [], color=colors[i], s=60, label=labels[i], alpha=0.9, edgecolors='white', linewidths=0.4)
+legend_handles = [plt.scatter([], [], color=colors[i], s=60, label=labels[i], alpha=0.9, edgecolors='none', linewidths=0)
                   for i in range(len(labels))]
 
 time_list = [5, 20, 45, 80]
@@ -77,7 +77,7 @@ for i, (time, size) in enumerate(zip(reversed(time_list), reversed(bubble_sizes)
     ax.scatter(
         legend_center_x, legend_center_y - i * bubble_step, s=size,
         color='grey', alpha=0.6, zorder=10 + i,
-        edgecolors='white', linewidths=1.2,
+        edgecolors='white', linewidths=0.6,
         transform=ax.transAxes
     )
 

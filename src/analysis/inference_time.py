@@ -21,17 +21,17 @@ plt.rcParams.update({
 # mse = [0.300, 0.316, 0.413, 0.469, 0.663, 1.298]
 # crps = [0.246, 0.257, 0.327, 0.383, 0.487, 0.689]
 
-mse = [0.444, 0.468, 0.629, 0.721, 1.465, 0.932]
-crps = [0.229, 0.237, 0.378, 0.557, 0.671, 0.657]
+mse = [0.444, 0.629, 0.721, 1.465, 0.932]
+crps = [0.229, 0.378, 0.557, 0.671, 0.657]
 # qice = [1.24, 0.78, 2.35, 14.82, 5.03, 3.04, 5.12]
 # time = [0.11, 0.27, 11.54]
 # sizes = [0.11, 0.42, 11.54, 30.45, 88.70, 83, 24.82]
-sizes = [2.72, 3.51, 2.34, 11.20, 117.65, 34.92]
-bubble_scale = 70
+sizes = [2.72, 2.34, 11.20, 117.65, 34.92]
+bubble_scale = 100
 sizes = [i * bubble_scale for i in sizes]
 
-labels = ['LS-Flow', '$\mathrm{D}^3\mathrm{U}$', 'NsDiff', 'TMDM', 'TimeDiff', 'TimeGrad']
-colors = ["#C32340", '#B4512D', "#206060", "#44C39B", "#D8B365", "#185395", ]
+labels = ['LS-Flow', 'NsDiff', 'TMDM', 'TimeDiff', 'TimeGrad']
+colors = ["#C32340", "#206060", "#44C39B", "#D8B365", "#185395", ]
 
 y = mse
 x = crps
@@ -69,7 +69,7 @@ bubble_sizes = [s * bubble_scale for s in time_list]  # 与主图气泡保持一
  
 # 图例起始位置
 legend_center_x = 0.85
-legend_center_y = 0.18
+legend_center_y = 0.16
 bubble_step = 0.036
 
 for i, (time, size) in enumerate(zip(reversed(time_list), reversed(bubble_sizes))):
@@ -89,7 +89,7 @@ for i, (time, size) in enumerate(zip(reversed(time_list), reversed(bubble_sizes)
         fontsize=10, color='black', zorder=20 + i,
         transform=ax.transAxes)
     
-ax.text(0.85, 0.33, 'Inference time(s)', fontsize=11,
+ax.text(0.85, 0.31, 'Inference time(s)', fontsize=11,
     ha='center', va='bottom', transform=ax.transAxes,
     bbox=dict(facecolor='white', edgecolor='none', alpha=0.7, pad=1.2))
 # plt.text(0.732, 0.905, 'Inference time(s)',)

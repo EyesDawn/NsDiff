@@ -22,7 +22,7 @@ export SEQ_LEN=96
 export PRED_LEN=192
 export NUM_SAMPLING_STEPS=5
 export NUM_SAMPLES=100
-export GPU_ID="${GPU_ID:-0}"
+export GPU_ID="${GPU_ID:-2}"
 export SEEDS='[2026]'
 export STAGE3_LR="${STAGE3_LR:-0.00005}"
 

@@ -1,17 +1,14 @@
 #!/bin/bash
 
 # iReflow运行脚本 - Electricity数据集
-# 使用Rectified Flow进行概率时间序列预测
+# 使用三阶段流程进行 NUM_SAMPLING_STEPS 敏感性分析
 
-export PYTHONPATH=./
-export CUDA_DEVICE_ORDER=PCI_BUS_ID
+set -euo pipefail
 
-# 数据集配置
 DATASET="Electricity"
 DATA_PATH="electricity/electricity.csv"
 ROOT_PATH="./data/"
 
-# 模型配置
 MODEL_ID="electricity_96_192"
 MODEL_NAME="iReflow"
 D_FEATURES="M"
@@ -27,131 +24,35 @@ D_FF=512
 DROPOUT=0.1
 USE_RELATIVE_SPACE=True
 
-# 训练配置
 BATCH_SIZE=16
 EPOCHS=40
 PATIENCE=8
 LR_PATIENCE=3
 
-# Flow配置
-NUM_SAMPLING_STEPS=5
+NUM_SAMPLING_STEPS_LIST="${NUM_SAMPLING_STEPS_LIST:-1 2 5 10 20 50}"
 TEMPERATURE=1.0
 NUM_SAMPLES=100
 X0_DIST="pred_gaussian"
 
-# 预测配置
 SEQ_LEN=96
 PRED_LEN=192
 HORIZON=1
 
-# 设备配置
-GPU_ID=2
-export CUDA_VISIBLE_DEVICES=${GPU_ID}
-DEVICE="cuda:0"
+GPU_ID="${GPU_ID:-2}"
+DEVICE="${DEVICE:-cuda:0}"
 
-SEEDS='[2027]'
+SEEDS="${SEEDS:-[2020]}"
 CHECKPOINTS="./results/runs/iTransformer/"
 ITR=1
 
-# ============================================================================
-# Stage 2: 预训练 Uncertainty Estimator（不确定性估计）
-# ============================================================================
-# echo "============================================================================"
-# echo "Stage 2: Pretraining Uncertainty Estimator"
-# echo "============================================================================"
-# echo ""
+STAGE2_WANDB_PROJECT="${STAGE2_WANDB_PROJECT:-iReflow-Stage2-Uncertainty}"
+STAGE3_WANDB_PROJECT="${STAGE3_WANDB_PROJECT:-iReflow-Stage3-Velocity}"
+STAGE2_LR="${STAGE2_LR:-0.0001}"
+STAGE3_LR="${STAGE3_LR:-0.00005}"
 
-# STAGE2_WANDB_PROJECT="iReflow-Stage2-Uncertainty"
-# STAGE2_CHECKPOINTS="./results/runs/iTransformer/"
-# STAGE2_LR=0.0001
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/three_stage_sweep_lib.sh"
 
-# python3 -u ./src/experiments/pretrain_uncertainty_estimator.py \
-#     --wandb_project ${STAGE2_WANDB_PROJECT} \
-#     --is_training 1 \
-#     --root_path ${ROOT_PATH} \
-#     --data_path ${DATA_PATH} \
-#     --model_id ${MODEL_ID} \
-#     --model iReflow \
-#     --data ${DATASET} \
-#     --features ${D_FEATURES} \
-#     --seq_len ${SEQ_LEN} \
-#     --pred_len ${PRED_LEN} \
-#     --e_layers ${E_LAYERS} \
-#     --enc_in ${ENC_IN} \
-#     --dec_in ${DEC_IN} \
-#     --c_out ${C_OUT} \
-#     --des ${DES} \
-#     --d_model ${D_MODEL} \
-#     --d_ff ${D_FF} \
-#     --batch_size ${BATCH_SIZE} \
-#     --lr ${STAGE2_LR} \
-#     --itr ${ITR} \
-#     --checkpoints ${STAGE2_CHECKPOINTS} \
-#     --flow_layers ${FLOW_LAYERS} \
-#     --n_heads ${N_HEADS} \
-#     --dropout ${DROPOUT} \
-#     --epochs 20 \
-#     --patience 6 \
-#     --lr_patience 1 \
-#     --num_sampling_steps 1 \
-#     --temperature 1.0 \
-#     --num_samples 100 \
-#     --device ${DEVICE} \
-#     --use_relative_space ${USE_RELATIVE_SPACE} \
-#     runs --seeds="${SEEDS}"
-
-# echo ""
-# echo "Stage 2 completed!"
-# echo ""
-
-# ============================================================================
-# Stage 3: 训练 Velocity Network
-# ============================================================================
-echo "============================================================================"
-echo "Stage 3: Training Velocity Network"
-echo "============================================================================"
-echo ""
-
-STAGE3_WANDB_PROJECT="iReflow-Stage3-Velocity"
-STAGE3_CHECKPOINTS="./results/runs/iTransformer/"
-STAGE3_LR=0.00005
-
-python3 -u ./src/experiments/iReflow.py \
-    --wandb_project ${STAGE3_WANDB_PROJECT} \
-    --is_training 1 \
-    --root_path ${ROOT_PATH} \
-    --data_path ${DATA_PATH} \
-    --model_id ${MODEL_ID} \
-    --model iReflow \
-    --data ${DATASET} \
-    --features ${D_FEATURES} \
-    --seq_len ${SEQ_LEN} \
-    --pred_len ${PRED_LEN} \
-    --e_layers ${E_LAYERS} \
-    --enc_in ${ENC_IN} \
-    --dec_in ${DEC_IN} \
-    --c_out ${C_OUT} \
-    --des ${DES} \
-    --d_model ${D_MODEL} \
-    --d_ff ${D_FF} \
-    --batch_size ${BATCH_SIZE} \
-    --lr ${STAGE3_LR} \
-    --itr ${ITR} \
-    --checkpoints ${STAGE3_CHECKPOINTS} \
-    --flow_layers ${FLOW_LAYERS} \
-    --n_heads ${N_HEADS} \
-    --dropout ${DROPOUT} \
-    --epochs ${EPOCHS} \
-    --patience ${PATIENCE} \
-    --lr_patience ${LR_PATIENCE} \
-    --num_sampling_steps ${NUM_SAMPLING_STEPS} \
-    --temperature ${TEMPERATURE} \
-    --num_samples ${NUM_SAMPLES} \
-    --device ${DEVICE} \
-    --use_relative_space ${USE_RELATIVE_SPACE} \
-    --x0_dist ${X0_DIST} \
-    runs --seeds="${SEEDS}"
-
-echo ""
-echo "Stage 3 completed!"
-echo ""
+run_stage1
+run_stage2
+run_stage3_sweep

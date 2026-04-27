@@ -21,6 +21,6 @@ pred_len: 192
 num_sampling_steps: 5
 temperature: 1.0
 num_samples: 100
-seeds: [1]
+seeds: [2211, 2212, 2213, 2214]
 use_relative_space: true
 x0_dist: pred_gaussian

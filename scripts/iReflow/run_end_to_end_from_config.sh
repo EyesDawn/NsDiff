@@ -11,7 +11,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 CONFIG_PATH="$1"
 
-PYTHON_BIN="${PYTHON_BIN:-/opt/conda/envs/ireflow/bin/python}"
 WANDB_PROJECT="${WANDB_PROJECT:-iReflow-E2E}"
 ROOT_PATH="${ROOT_PATH:-./data/}"
 CHECKPOINTS="${CHECKPOINTS:-./results/runs/iTransformer/}"
@@ -26,7 +25,7 @@ export PYTHONPATH="${REPO_ROOT}"
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 
-"${PYTHON_BIN}" - "${REPO_ROOT}" "${CONFIG_PATH}" "${WANDB_PROJECT}" "${ROOT_PATH}" "${CHECKPOINTS}" "${DEVICE}" <<'PY'
+python - "${REPO_ROOT}" "${CONFIG_PATH}" "${WANDB_PROJECT}" "${ROOT_PATH}" "${CHECKPOINTS}" "${DEVICE}" <<'PY'
 import json
 import os
 import shlex

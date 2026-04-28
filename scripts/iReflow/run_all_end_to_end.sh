@@ -7,8 +7,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 CONFIG_DIR="${REPO_ROOT}/configs/iReflow_e2e"
 RUNNER_SCRIPT="${SCRIPT_DIR}/run_end_to_end_from_config.sh"
 
-PYTHON_BIN="${PYTHON_BIN:-/opt/conda/envs/ireflow/bin/python}"
-GPU_ID="${GPU_ID:-2}"
+GPU_ID="${GPU_ID:-1}"
 export WANDB_PROJECT="${WANDB_PROJECT:-iReflow-E2E}"
 export PYTHONPATH="${REPO_ROOT}"
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
@@ -33,7 +32,7 @@ CONFIGS=(
 
 echo "===================================================================="
 echo "iReflow end-to-end batch runner"
-echo "Python     : ${PYTHON_BIN}"
+echo "Python     : $(command -v python)"
 echo "GPU        : cuda:${GPU_ID}"
 echo "Device arg : ${DEVICE}"
 echo "Wandb proj : ${WANDB_PROJECT}"
@@ -42,7 +41,7 @@ echo "Log dir    : ${LOG_DIR}"
 echo "===================================================================="
 
 for config in "${CONFIGS[@]}"; do
-    dataset_name="$("${PYTHON_BIN}" - "${config}" <<'PY'
+    dataset_name="$(python - "${config}" <<'PY'
 import sys
 import yaml
 with open(sys.argv[1], "r", encoding="utf-8") as f:

@@ -24,7 +24,6 @@ CONFIGS=(
     "${CONFIG_DIR}/ettm1.yaml"
     "${CONFIG_DIR}/ettm2.yaml"
     "${CONFIG_DIR}/electricity.yaml"
-    "${CONFIG_DIR}/exchange_rate.yaml"
     "${CONFIG_DIR}/solar_energy.yaml"
     "${CONFIG_DIR}/traffic.yaml"
     "${CONFIG_DIR}/weather.yaml"
@@ -66,4 +65,4 @@ PY
 done
 
 echo ""
-echo "All 9 iReflow end-to-end experiments completed successfully."
+echo "All 8 iReflow end-to-end experiments completed successfully."

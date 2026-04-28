@@ -15,6 +15,7 @@ WANDB_PROJECT="${WANDB_PROJECT:-iReflow-E2E}"
 ROOT_PATH="${ROOT_PATH:-./data/}"
 CHECKPOINTS="${CHECKPOINTS:-./results/runs/iTransformer/}"
 DEVICE="${DEVICE:-cuda:0}"
+GPU_ID="${GPU_ID:-0}"
 
 if [[ ! -f "${CONFIG_PATH}" ]]; then
     echo "Config file not found: ${CONFIG_PATH}" >&2
@@ -23,7 +24,7 @@ fi
 
 export PYTHONPATH="${REPO_ROOT}"
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+export CUDA_VISIBLE_DEVICES="${GPU_ID}"
 
 python - "${REPO_ROOT}" "${CONFIG_PATH}" "${WANDB_PROJECT}" "${ROOT_PATH}" "${CHECKPOINTS}" "${DEVICE}" <<'PY'
 import json

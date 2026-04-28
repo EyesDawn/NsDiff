@@ -168,7 +168,7 @@ class CSDIForecast(ProbForecastExp, CSDIParameters):
             self._run_print(f"Traininng loss : {np.mean(train_losses)}")
 
             val_result = self._val()
-            test_result = self._test()
+            # test_result = self._test()
 
             self.current_epoch = self.current_epoch + 1
             self.early_stopper(val_result['crps'], model=self.model)

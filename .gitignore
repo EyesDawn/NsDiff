@@ -30,7 +30,8 @@ fig/example/
 
 # dataset suffix
 *.txt.gz
-
+*.tar.gz
+*.zip
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

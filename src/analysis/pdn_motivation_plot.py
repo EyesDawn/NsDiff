@@ -51,12 +51,12 @@ def _configure_style(dpi: int) -> None:
             "axes.spines.top": False,
             "axes.spines.right": False,
             "axes.titleweight": "semibold",
-            "axes.labelsize": 11.5,
-            "axes.titlesize": 12.5,
-            "xtick.labelsize": 9.5,
-            "ytick.labelsize": 9.5,
-            "legend.fontsize": 9.5,
-            "figure.titlesize": 17,
+            "axes.labelsize": 20,
+            "axes.titlesize": 21,
+            "xtick.labelsize": 16,
+            "ytick.labelsize": 16,
+            "legend.fontsize": 18,
+            "figure.titlesize": 24,
             "savefig.dpi": dpi,
         }
     )
@@ -101,16 +101,20 @@ def _build_synthetic_motivation_data(
     num_density_samples: int,
 ) -> tuple[np.ndarray, list[np.ndarray], list[np.ndarray], SyntheticMotivationMetadata]:
     rng = np.random.default_rng(seed)
-    raw_locations = [-2.6, 0.2, 2.9]
-    raw_scales = [0.55, 1.00, 1.55]
+    raw_locations = [-2.45, 0.37, 2.78]
+    raw_scales = [0.58, 0.91, 1.48]
+    standardized_locations = [-0.08, 0.04, 0.11]
+    standardized_scales = [0.95, 1.03, 1.07]
     num_segments = len(raw_locations)
 
     standardized_density_segments: list[np.ndarray] = []
     raw_density_segments: list[np.ndarray] = []
     raw_curve_segments: list[np.ndarray] = []
 
-    for seg_idx, (loc, scale) in enumerate(zip(raw_locations, raw_scales)):
-        z_density = _sample_base_distribution(num_density_samples, rng)
+    for seg_idx, (loc, scale, z_loc, z_scale) in enumerate(
+        zip(raw_locations, raw_scales, standardized_locations, standardized_scales)
+    ):
+        z_density = z_loc + z_scale * _sample_base_distribution(num_density_samples, rng)
         y_density = loc + scale * z_density
         standardized_density_segments.append(z_density)
         raw_density_segments.append(y_density)
@@ -183,7 +187,7 @@ def _plot_density_panel(
         0.95,
         rf"$\mu={np.mean(stats):.2f},\ \sigma={np.std(stats):.2f}$",
         transform=ax.transAxes,
-        fontsize=9.5,
+        fontsize=18,
         va="top",
         color=stat_color,
         bbox=dict(boxstyle="round,pad=0.22", facecolor="white", edgecolor="none", alpha=0.82),
@@ -268,7 +272,7 @@ def _add_row_label(fig: plt.Figure, axes: list[plt.Axes], text: str, color: str)
         ha="center",
         va="center",
         rotation=90,
-        fontsize=13.0,
+        fontsize=18,
         fontweight="semibold",
         color=color,
     )
@@ -281,6 +285,45 @@ def _save_metadata(metadata_path: str | None, metadata: SyntheticMotivationMetad
     with open(metadata_path, "w", encoding="utf-8") as f:
         json.dump(asdict(metadata), f, indent=2)
     print(f"[Metadata] Saved to: {metadata_path}")
+
+
+def _build_segment_output_path(output_path: str, row_name: str, segment_idx: int) -> str:
+    output_abspath = os.path.abspath(output_path)
+    output_dir = os.path.dirname(output_abspath)
+    stem, ext = os.path.splitext(os.path.basename(output_abspath))
+    segment_dir = os.path.join(output_dir, f"{stem}_segments")
+    os.makedirs(segment_dir, exist_ok=True)
+    return os.path.join(segment_dir, f"{row_name}_segment_{segment_idx + 1}{ext}")
+
+
+def _save_segment_panel(
+    output_path: str,
+    data: np.ndarray,
+    clip_range: tuple[float, float],
+    bins: int,
+    color: str,
+    add_normal_ref: bool,
+    stat_color: str,
+    y_max: float,
+    dpi: int,
+) -> None:
+    fig, ax = plt.subplots(figsize=(4.0, 4.0), dpi=dpi)
+    _plot_density_panel(
+        ax=ax,
+        data=data,
+        clip_range=clip_range,
+        bins=bins,
+        color=color,
+        add_normal_ref=add_normal_ref,
+        stat_color=stat_color,
+    )
+    ax.set_box_aspect(1.0)
+    ax.set_ylim(0.0, y_max * 1.06)
+    _style_density_strip([ax], edge_color="#2A3655", panel_face="#FCFCFE", separator_color="#2A3655")
+    fig.subplots_adjust(left=0.08, right=0.98, top=0.98, bottom=0.08)
+    fig.savefig(output_path, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    print(f"[Segment] Saved to: {output_path}")
 
 
 def plot_schematic_motivation(
@@ -302,7 +345,7 @@ def plot_schematic_motivation(
         num_density_samples=num_density_samples,
     )
 
-    segment_colors = ["#2E5EAA", "#C47A2C", "#2C8A72"]
+    segment_colors = ["#C47A2C", "#2E5EAA", "#2C8A72"]
     edge_color = "#2A3655"
     separator_color = "#A6B2C8"
     arrow_color = "#E7A2AC"
@@ -310,7 +353,7 @@ def plot_schematic_motivation(
     raw_clip = _robust_clip(raw_segments, clip_lower_quantile, clip_upper_quantile)
     std_clip = _robust_clip(standardized_segments, clip_lower_quantile, clip_upper_quantile)
 
-    fig = plt.figure(figsize=(14.0, 5.9), dpi=dpi)
+    fig = plt.figure(figsize=(11.4, 9.0), dpi=dpi)
     gs = gridspec.GridSpec(
         2,
         1,
@@ -331,9 +374,10 @@ def plot_schematic_motivation(
             clip_range=raw_clip,
             bins=bins,
             color=segment_colors[seg_idx],
-            add_normal_ref=False,
+            add_normal_ref=True,
             stat_color="#485466",
         )
+        ax_raw.set_box_aspect(1.0)
         raw_axes.append(ax_raw)
 
         ax_std = fig.add_subplot(std_gs[0, seg_idx])
@@ -346,6 +390,7 @@ def plot_schematic_motivation(
             add_normal_ref=True,
             stat_color="#485466",
         )
+        ax_std.set_box_aspect(1.0)
         std_axes.append(ax_std)
 
     raw_ymax = max(ax.get_ylim()[1] for ax in raw_axes)
@@ -371,11 +416,36 @@ def plot_schematic_motivation(
     if sns is not None:
         sns.despine(fig=fig, offset=2)
 
-    fig.subplots_adjust(left=0.11, right=0.985, top=0.96, bottom=0.085, hspace=0.40)
+    fig.subplots_adjust(left=0.11, right=0.985, top=0.965, bottom=0.07, hspace=0.28)
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     fig.savefig(output_path, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     print(f"[Figure] Saved to: {output_path}")
+
+    for seg_idx, segment_data in enumerate(raw_segments):
+        _save_segment_panel(
+            output_path=_build_segment_output_path(output_path, "raw_space", seg_idx),
+            data=segment_data,
+            clip_range=raw_clip,
+            bins=bins,
+            color=segment_colors[seg_idx],
+            add_normal_ref=True,
+            stat_color="#485466",
+            y_max=raw_ymax,
+            dpi=dpi,
+        )
+    for seg_idx, segment_data in enumerate(standardized_segments):
+        _save_segment_panel(
+            output_path=_build_segment_output_path(output_path, "standardized_space", seg_idx),
+            data=segment_data,
+            clip_range=std_clip,
+            bins=bins,
+            color=segment_colors[seg_idx],
+            add_normal_ref=True,
+            stat_color="#485466",
+            y_max=std_ymax,
+            dpi=dpi,
+        )
 
     _save_metadata(metadata_path=metadata_path, metadata=metadata)
 

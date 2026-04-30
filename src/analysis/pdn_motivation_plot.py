@@ -101,6 +101,8 @@ def _build_synthetic_motivation_data(
     num_density_samples: int,
 ) -> tuple[np.ndarray, list[np.ndarray], list[np.ndarray], SyntheticMotivationMetadata]:
     rng = np.random.default_rng(seed)
+    # raw_locations = [-2.30, 0.37, 2.78]
+    # raw_scales = [0.65, 0.91, 1.48]
     raw_locations = [-2.45, 0.37, 2.78]
     raw_scales = [0.58, 0.91, 1.48]
     standardized_locations = [-0.08, 0.04, 0.11]

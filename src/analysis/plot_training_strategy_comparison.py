@@ -39,8 +39,8 @@ def configure_style(dpi: int) -> None:
         {
             "figure.dpi": dpi,
             "savefig.dpi": dpi,
-            "font.family": "serif",
-            "font.serif": ["Times New Roman", "Times", "DejaVu Serif"],
+            # "font.family": "serif",
+            # "font.serif": ["Times New Roman", "Times", "DejaVu Serif"],
             "axes.labelsize": 20,
             "axes.titlesize": 18,
             "axes.titleweight": "semibold",

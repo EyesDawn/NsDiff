@@ -5,13 +5,13 @@ from pathlib import Path
 plt.rcParams.update({
     'figure.dpi': 600,
     'savefig.dpi': 600,
-    'font.family': 'serif',
-    'font.serif': ['Times New Roman', 'Times', 'DejaVu Serif'],
-    'axes.labelsize': 14,
-    'axes.titlesize': 14,
-    'xtick.labelsize': 12,
-    'ytick.labelsize': 12,
-    'legend.fontsize': 11,
+    # 'font.family': 'sans-serif',
+    # 'font.sans-serif': ['Calibri', 'Helvetica', 'Arial', 'sans-serif'],
+    'axes.labelsize': 18,
+    'axes.titlesize': 16,
+    'xtick.labelsize': 13,
+    'ytick.labelsize': 13,
+    'legend.fontsize': 12,
     'axes.linewidth': 1.0,
     'pdf.fonttype': 42,
     'ps.fonttype': 42,
@@ -21,12 +21,12 @@ plt.rcParams.update({
 # mse = [0.300, 0.316, 0.413, 0.469, 0.663, 1.298]
 # crps = [0.246, 0.257, 0.327, 0.383, 0.487, 0.689]
 
-mse = [0.444, 0.468, 0.629, 0.721, 1.465, 0.932]
-crps = [0.229, 0.237, 0.378, 0.557, 0.671, 0.657]
+mse = [0.451, 0.535, 0.630, 0.695, 1.465, 0.932]
+crps = [0.229, 0.256, 0.363, 0.561, 0.671, 0.657]
 # qice = [1.24, 0.78, 2.35, 14.82, 5.03, 3.04, 5.12]
 # time = [0.11, 0.27, 11.54]
 # sizes = [0.11, 0.42, 11.54, 30.45, 88.70, 83, 24.82]
-sizes = [2.72, 10.49, 2.34, 11.20, 117.65, 34.92]
+sizes = [2.12, 10.49, 2.34, 11.20, 117.65, 34.92]
 bubble_scale = 100
 sizes = [i * bubble_scale for i in sizes]
 
@@ -101,8 +101,8 @@ plt.ylim(y_min, y_max)
 # 标注
 # plt.xlabel('CRPS', fontsize=12)
 # plt.ylabel('MSE', fontsize=12)
-plt.xlabel('CRPS', fontsize=12, )
-plt.ylabel('MSE', fontsize=12,)
+plt.xlabel('CRPS')
+plt.ylabel('MSE')
 # plt.title('Scatter Plot from Rows 2 and 3', fontsize=14)
 
 

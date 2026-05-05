@@ -1,12 +1,18 @@
 """
 Evaluate the simple Gaussian source distribution used by iReflow/LS-Flow.
 
-This script bypasses the velocity network and resamples directly from
+This script bypasses the velocity network and evaluates the Gaussian
 
     Y ~ Normal(y_hat, sigma^2)
 
-where y_hat and sigma are produced by iReflow's conditioner. It then computes
-CRPS, CRPSsum, MSE, and MAE against the test-set ground truth.
+analytically. CRPS is computed with the closed-form Gaussian expression, and
+CRPSsum is computed from the summed independent Gaussian, whose mean and
+variance are:
+
+    mu_sum = sum_i mu_i
+    var_sum = sum_i sigma_i^2
+
+MSE and MAE are computed on the predictive mean y_hat.
 """
 
 from __future__ import annotations
@@ -14,6 +20,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import os
 import random
 import sys
@@ -25,14 +32,11 @@ os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
 import numpy as np
 import torch
-from torchmetrics import MetricCollection
 from tqdm import tqdm
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
-
-from src.metrics import CRPS, CRPSSum, ProbMAE, ProbMSE  # noqa: E402
 
 
 CLASS_REGISTRY: Dict[str, str] = {
@@ -220,17 +224,31 @@ def _init_experiment_from_run(
     return exp, config, checkpoint_dir
 
 
-def _make_metrics() -> MetricCollection:
-    metrics = MetricCollection(
-        {
-            "crps": CRPS(),
-            "crps_sum": CRPSSum(normalize=True),
-            "mse": ProbMSE(),
-            "mae": ProbMAE(),
-        }
+def _gaussian_crps_sum(
+    true: torch.Tensor,
+    mean: torch.Tensor,
+    sigma: torch.Tensor,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    sigma = sigma.clamp_min(eps)
+    z = (true - mean) / sigma
+    normal = torch.distributions.Normal(
+        loc=torch.zeros((), device=true.device, dtype=true.dtype),
+        scale=torch.ones((), device=true.device, dtype=true.dtype),
     )
-    metrics.to("cpu")
-    return metrics
+    phi = torch.exp(normal.log_prob(z))
+    Phi = normal.cdf(z)
+    crps = sigma * (z * (2.0 * Phi - 1.0) + 2.0 * phi - 1.0 / math.sqrt(math.pi))
+    return crps.sum()
+
+
+def _scale_sigma_to_origin(exp: Any, sigma: torch.Tensor) -> torch.Tensor:
+    if not hasattr(exp, "_get_scaler_mean_std"):
+        return sigma
+    _, std = exp._get_scaler_mean_std(dtype=sigma.dtype, device=sigma.device)
+    if std is None:
+        return sigma
+    return sigma * std.view(1, 1, -1)
 
 
 def _iter_micro_batches(
@@ -281,8 +299,19 @@ def evaluate_gaussian_resampling(
         else getattr(exp, "eval_micro_batch_size", getattr(exp, "batch_size", 32))
     )
 
-    metrics = _make_metrics()
     dataset = _dataset_from_config(config) or str(getattr(exp, "dataset_type", ""))
+    if num_samples is not None:
+        print(
+            "Warning: --num_samples is ignored in analytic Gaussian mode; "
+            "it is kept only for CLI compatibility."
+        )
+
+    total_points = 0
+    total_crps = 0.0
+    total_crps_sum = 0.0
+    total_crps_sum_denom = 0.0
+    total_mse = 0.0
+    total_mae = 0.0
 
     total_windows = len(exp.test_loader.dataset)
     seen_batches = 0
@@ -304,26 +333,42 @@ def evaluate_gaussian_resampling(
                 mb_x_date_enc = mb_x_date_enc.to(exp.device).float()
 
                 _enc_features, y_hat, sigma = exp.model.get_encoder_features(mb_x, mb_x_date_enc)
-                eps = torch.randn(
-                    (y_hat.shape[0], samples_count, y_hat.shape[1], y_hat.shape[2]),
-                    device=y_hat.device,
-                    dtype=y_hat.dtype,
-                )
-                samples = y_hat.unsqueeze(1) + eps * sigma.clamp_min(1e-6).unsqueeze(1)
-                preds = samples.permute(0, 2, 3, 1).contiguous()
                 truths = mb_y
 
                 if getattr(exp, "invtrans_loss", False):
-                    preds = exp._inverse_transform_last_dim(preds)
                     truths = mb_origin_y
+                    y_hat = exp._inverse_transform_last_dim(y_hat)
+                    sigma = _scale_sigma_to_origin(exp, sigma)
 
-                metrics.update(preds.cpu().detach(), truths.cpu().detach())
+                sigma = sigma.clamp_min(1e-6)
+                total_points += truths.numel()
+                total_crps += float(_gaussian_crps_sum(truths, y_hat, sigma).item())
+
+                true_sum = truths.sum(dim=2)
+                mean_sum = y_hat.sum(dim=2)
+                sigma_sum = sigma.square().sum(dim=2).sqrt()
+                total_crps_sum += float(_gaussian_crps_sum(true_sum, mean_sum, sigma_sum).item())
+                total_crps_sum_denom += float(true_sum.abs().sum().item())
+
+                diff = y_hat - truths
+                total_mse += float(diff.square().sum().item())
+                total_mae += float(diff.abs().sum().item())
                 progress_bar.update(mb_x.shape[0])
 
             if max_batches is not None and seen_batches >= max_batches:
                 break
 
-    result = {name: float(metric.compute()) for name, metric in metrics.items()}
+    if total_points == 0:
+        raise RuntimeError("No test points were evaluated.")
+
+    result = {
+        "crps": total_crps / float(total_points),
+        "crps_sum": (
+            total_crps_sum / total_crps_sum_denom if total_crps_sum_denom > 0.0 else 0.0
+        ),
+        "mse": total_mse / float(total_points),
+        "mae": total_mae / float(total_points),
+    }
     result.update(
         {
             "data": dataset,
@@ -335,14 +380,17 @@ def evaluate_gaussian_resampling(
     return result
 
 
-def _write_csv(rows: Sequence[Dict[str, Any]], output_path: Path) -> None:
+CSV_COLUMNS = ["data", "seed", "num_samples", "crps", "crps_sum", "mse", "mae", "run_dir"]
+
+
+def _append_csv_row(row: Dict[str, Any], output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    columns = ["data", "seed", "num_samples", "crps", "crps_sum", "mse", "mae", "run_dir"]
-    with output_path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=columns)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({column: row.get(column, "") for column in columns})
+    needs_header = not output_path.exists() or output_path.stat().st_size == 0
+    with output_path.open("a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
+        if needs_header:
+            writer.writeheader()
+        writer.writerow({column: row.get(column, "") for column in CSV_COLUMNS})
 
 
 def _print_summary(rows: Sequence[Dict[str, Any]]) -> None:
@@ -394,6 +442,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     run_dirs: List[Path] = []
+    output_path = Path(args.output_csv)
 
     if args.run_dirs:
         run_dirs.extend(Path(path).resolve() for path in args.run_dirs)
@@ -428,8 +477,8 @@ def main() -> None:
             max_batches=args.max_batches,
         )
         rows.append(row)
+        _append_csv_row(row, output_path)
 
-    _write_csv(rows, Path(args.output_csv))
     _print_summary(rows)
     print("\nSaved CSV:", args.output_csv)
 

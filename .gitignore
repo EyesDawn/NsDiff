@@ -24,6 +24,7 @@ tmp_analysis_test
 docs/paper
 249-container.txt
 fig/example/
+evidence/
 
 # dataset suffix
 *.txt.gz

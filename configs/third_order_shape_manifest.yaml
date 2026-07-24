@@ -1,0 +1,54 @@
+# Single-seed pilot manifest.  Entries were resolved from the existing
+# iReflow-e2e logs and their SHA-256 values were computed locally on 2026-07-24.
+# The runner verifies each hash before it starts, so this is the only L2 source
+# used by the L3 pilot.  To restore the full five-run design, add l2_2..l2_5
+# and launch with --runs_per_dataset 5.
+datasets:
+  ETTh1:
+    l2_1:
+      checkpoint: results/runs/iReflow/ETTh1/w96h1s192/9238c032bbc53656028956ad0255b22a/train_mode_2/best_model.pth
+      sha256: 79cee9f09f4d14e361c49e74d51e6495a07623493c615e2066515bf9699bff27
+      config_path: configs/iReflow_e2e/etth1.yaml
+      l3_seed: 2211
+  ETTh2:
+    l2_1:
+      checkpoint: results/runs/iReflow/ETTh2/w96h1s192/76297fe51cba3d0237f9d8c716db2a64/train_mode_2/best_model.pth
+      sha256: dd480874f611bb14fa285a675f1e6e26fa62520355794163e08cf785ffbab8d6
+      config_path: configs/iReflow_e2e/etth2.yaml
+      l3_seed: 2211
+  ETTm1:
+    l2_1:
+      checkpoint: results/runs/iReflow/ETTm1/w96h1s192/badbd08397581d3b589db275719bc198/train_mode_2/best_model.pth
+      sha256: 94f751e481eecea4ffca555b28e98ca218fd4f83c89ccea8a214d0d7a4eb9303
+      config_path: configs/iReflow_e2e/ettm1.yaml
+      l3_seed: 2211
+  ETTm2:
+    l2_1:
+      checkpoint: results/runs/iReflow/ETTm2/w96h1s192/1c0e4a598dc1e27a89dffc125116b038/train_mode_2/best_model.pth
+      sha256: 636f8252ff1e04b94b147427911e2ea199caf03a72debc7c173494511c4b263f
+      config_path: configs/iReflow_e2e/ettm2.yaml
+      l3_seed: 2211
+  Electricity:
+    l2_1:
+      checkpoint: results/runs/iReflow/Electricity/w96h1s192/f02944d8df9971024112b14edac42e8b/train_mode_2/best_model.pth
+      sha256: 757e9dbdea324d21422dd4a3b182b908c047761f2bf7957a1419b46e2dd419e3
+      config_path: configs/iReflow_e2e/electricity.yaml
+      l3_seed: 2210
+  SolarEnergy:
+    l2_1:
+      checkpoint: results/runs/iReflow/SolarEnergy/w96h1s192/d4933e06c80336d9052a8b3359697a0c/train_mode_2/best_model.pth
+      sha256: 08127d3105a13a1078daead2e53d0ea12baebc339029308724e075c4eca80ef9
+      config_path: configs/iReflow_e2e/solar_energy.yaml
+      l3_seed: 1
+  Traffic:
+    l2_1:
+      checkpoint: results/runs/iReflow/Traffic/w96h1s192/e1f97e540332ca38a8015afc54cfdef1/train_mode_2/best_model.pth
+      sha256: 6a7e1c5b041459243c47fa143f5fca8cc6b085d89b62283851acba31a44c6db0
+      config_path: configs/iReflow_e2e/traffic.yaml
+      l3_seed: 1
+  Weather:
+    l2_1:
+      checkpoint: results/runs/iReflow/Weather/w96h1s192/09050d9b1d6182ca06caba7c5c489149/train_mode_2/best_model.pth
+      sha256: 6e90fccfd4dd76a61cc6d7b8d1eba798f618e14d3ee8fd961ba48d383f3af94c
+      config_path: configs/iReflow_e2e/weather.yaml
+      l3_seed: 2205

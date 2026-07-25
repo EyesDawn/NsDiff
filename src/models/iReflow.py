@@ -22,6 +22,12 @@ class iReflow(nn.Module):
         self.pred_len = configs.pred_len
         self.d_model = configs.d_model
         self.is_training = getattr(configs, 'is_training', 2)
+        self.ablation_mode = getattr(configs, 'ablation_mode', 'location_scale')
+        if self.ablation_mode not in {'location_scale', 'mean_only'}:
+            raise ValueError(
+                f"Unsupported ablation_mode: {self.ablation_mode}. "
+                "Expected 'location_scale' or 'mean_only'."
+            )
         
         # Stage 1: iTransformer as Conditioner
         self.itransformer = iTransformer(configs)
@@ -30,28 +36,28 @@ class iReflow(nn.Module):
         # 直接输出 sigma（标准差）
         # 输入：encoder特征 [B, D, d_model]
         # 输出：sigma [B, D, P] -> [B, P, D]
-        self.uncertainty_estimator = nn.Sequential(
-            nn.Linear(configs.d_model, configs.d_model // 2),
-            nn.GELU(),
-            nn.LayerNorm(configs.d_model // 2),
-            # nn.Dropout(configs.dropout if hasattr(configs, 'dropout') else 0.1),
-            nn.Linear(configs.d_model // 2, configs.pred_len),
-            nn.Softplus()
-        )
-        
-        # 初始化：让sigma的初始值更合理（基于预测长度的经验值）
-        # 使用较小的初始值，避免sigma过大导致训练不稳定
-        init_sigma = max(float(getattr(configs, 'sigma_init', 0.1)), 1e-6)
-        for m in self.uncertainty_estimator.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight, gain=0.1)  # 较小的gain，让sigma初始值较小
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0.0)
-        # 仅调整最后一层 bias，使 Softplus(bias) ≈ init_sigma
-        last_linear = self.uncertainty_estimator[-2]
-        if isinstance(last_linear, nn.Linear) and last_linear.bias is not None:
-            sigma_bias = math.log(math.expm1(init_sigma))
-            nn.init.constant_(last_linear.bias, sigma_bias)
+        # Mean-only has no learned scale module.  Unit scale is only the
+        # coordinate convention for the otherwise identical velocity network.
+        self.uncertainty_estimator = None
+        if self.ablation_mode == 'location_scale':
+            self.uncertainty_estimator = nn.Sequential(
+                nn.Linear(configs.d_model, configs.d_model // 2),
+                nn.GELU(),
+                nn.LayerNorm(configs.d_model // 2),
+                nn.Linear(configs.d_model // 2, configs.pred_len),
+                nn.Softplus()
+            )
+
+            init_sigma = max(float(getattr(configs, 'sigma_init', 0.1)), 1e-6)
+            for m in self.uncertainty_estimator.modules():
+                if isinstance(m, nn.Linear):
+                    nn.init.xavier_uniform_(m.weight, gain=0.1)
+                    if m.bias is not None:
+                        nn.init.constant_(m.bias, 0.0)
+            last_linear = self.uncertainty_estimator[-2]
+            if isinstance(last_linear, nn.Linear) and last_linear.bias is not None:
+                sigma_bias = math.log(math.expm1(init_sigma))
+                nn.init.constant_(last_linear.bias, sigma_bias)
         
         # Stage 2: Velocity Network as Generator
         self.velocity_net = VelocityNetwork(
@@ -71,6 +77,10 @@ class iReflow(nn.Module):
             raise ValueError(
                 f"Unsupported x0_dist: {self.x0_dist}. "
                 "Expected one of {'pred_gaussian', 'standard_normal'}."
+            )
+        if self.ablation_mode == 'mean_only' and self.x0_dist != 'pred_gaussian':
+            raise ValueError(
+                "Mean-only requires x0_dist='pred_gaussian' so its source is mu(X) + epsilon."
             )
 
         # Loss 权重（默认不改变现有行为）
@@ -136,17 +146,18 @@ class iReflow(nn.Module):
             y_hat = y_hat * stdev[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1)
             y_hat = y_hat + means[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1)
         
-        # 估计不确定性: [B, D, d_model] -> [B, D, P] -> [B, P, D]
-        sigma = self.uncertainty_estimator(enc_features).permute(0, 2, 1)
-
-        # 如果使用了归一化，在 sigma 空间完成尺度变换
-        if self.itransformer.use_norm:
-            scale = stdev[:, 0, :].unsqueeze(1).expand(-1, self.pred_len, -1)
-            sigma = sigma * scale
-            min_sigma = torch.full_like(sigma, 0.001)
-            sigma = torch.clamp(sigma, min=min_sigma, max=2.0 * scale)
+        if self.ablation_mode == 'mean_only':
+            sigma = torch.ones_like(y_hat)
         else:
-            sigma = torch.clamp(sigma, min=0.001)
+            # 估计不确定性: [B, D, d_model] -> [B, D, P] -> [B, P, D]
+            sigma = self.uncertainty_estimator(enc_features).permute(0, 2, 1)
+            if self.itransformer.use_norm:
+                scale = stdev[:, 0, :].unsqueeze(1).expand(-1, self.pred_len, -1)
+                sigma = sigma * scale
+                min_sigma = torch.full_like(sigma, 0.001)
+                sigma = torch.clamp(sigma, min=min_sigma, max=2.0 * scale)
+            else:
+                sigma = torch.clamp(sigma, min=0.001)
         var = sigma.pow(2)
         s = torch.log(var)
 
@@ -195,7 +206,7 @@ class iReflow(nn.Module):
 
         point_loss = F.mse_loss(y_hat, y_gt)
         nll_loss = None
-        if self.is_training == 2:
+        if self.is_training == 2 and self.ablation_mode == 'location_scale':
             nll_loss = self.gaussian_nll_loss(y_hat, y_gt, sigma.pow(2))
 
         # Stage 2: 构建Rectified Flow
@@ -237,7 +248,8 @@ class iReflow(nn.Module):
         total_loss = self.velocity_loss_weight * velocity_loss
         if self.is_training == 2:
             total_loss = total_loss + self.point_loss_weight * point_loss
-            total_loss = total_loss + self.nll_loss_weight * nll_loss
+            if nll_loss is not None:
+                total_loss = total_loss + self.nll_loss_weight * nll_loss
 
         loss_dict = {
             'total_loss': total_loss.item(),

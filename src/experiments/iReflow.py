@@ -5,6 +5,8 @@ iReflow实验脚本
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional
 import os
+import hashlib
+import json
 import torch
 from dataclasses import dataclass, asdict, field
 import argparse
@@ -24,6 +26,7 @@ except:
     print("Warning: wandb is not installed, some functionality may not work.")
 
 from src.utils.uncertainty_eval import compute_sigma_metrics
+from src.metrics import EnergyScore
 
 
 def dict2namespace(config):
@@ -88,6 +91,7 @@ class iReflowExp(ProbForecastExp):
     class_strategy: str = 'projection'
     factor: int = 1
     use_relative_space: bool = True
+    ablation_mode: str = 'location_scale'  # location_scale | mean_only
     
     # 训练配置
     is_training: int = 1
@@ -178,12 +182,18 @@ class iReflowExp(ProbForecastExp):
         self.model_configs.nll_loss_weight = self.nll_loss_weight
         self.model_configs.velocity_loss_weight = self.velocity_loss_weight
         self.model_configs.use_relative_space = self.use_relative_space
+        self.model_configs.ablation_mode = self.ablation_mode
     
     def _init_model(self):
         """初始化模型"""
         self.model = iReflow(self.model_configs).to(self.device)
         # 注意：在 torch_timeseries 的 _setup_run() 中，会在 _init_model() 之后调用 _init_optimizer()
         # 因此 optimizer / scheduler 必须在 _init_optimizer() 里创建，避免被父类覆盖导致 scheduler 绑定错误的 optimizer。
+
+    def _init_metrics(self):
+        super()._init_metrics()
+        self.metrics.add_metrics({'energy_score': EnergyScore()})
+        self.metrics.to("cpu")
 
     def _init_optimizer(self):
         """初始化优化器与学习率调度器（遵循 torch_timeseries 的 _setup_run 调用顺序）"""
@@ -197,7 +207,7 @@ class iReflowExp(ProbForecastExp):
             self.model_optim = torch.optim.Adam(trainable_params, lr=self.lr)
             print(
                 "Initialized optimizer for Stage 3: "
-                "will freeze iTransformer and Uncertainty Estimator after loading weights, "
+                "will freeze iTransformer and any active Uncertainty Estimator after loading weights, "
                 "only training Velocity Network"
             )
         else:
@@ -224,7 +234,7 @@ class iReflowExp(ProbForecastExp):
     
     def _freeze_uncertainty_estimator(self):
         """冻结 Uncertainty Estimator 参数（在加载预训练权重后调用）"""
-        if self.is_training == 1:
+        if self.is_training == 1 and self.model.uncertainty_estimator is not None:
             for param in self.model.uncertainty_estimator.parameters():
                 param.requires_grad = False
             print("Uncertainty Estimator parameters frozen after loading pretrained weights")
@@ -427,6 +437,9 @@ class iReflowExp(ProbForecastExp):
 
         sigma_sums = {}
         sigma_counts = 0
+        interval_sums = {level: {'coverage': 0.0, 'width': 0.0} for level in (0.90, 0.95)}
+        interval_count = 0
+        residual_sums = {'sum1': 0.0, 'sum2': 0.0, 'sum3': 0.0, 'count': 0}
 
         # 获取当前评估时使用的样本数（如果设置了，否则使用全部样本数）
         num_samples = getattr(self, "_num_samples_for_eval", self.num_samples)
@@ -474,20 +487,40 @@ class iReflowExp(ProbForecastExp):
                             truths.contiguous().cpu().detach(),
                         )
 
+                        # Distributional intervals are computed from the same
+                        # generated samples as CRPS rather than from sigma.
+                        for level in interval_sums:
+                            alpha = (1.0 - level) / 2.0
+                            low = torch.quantile(preds, alpha, dim=-1)
+                            high = torch.quantile(preds, 1.0 - alpha, dim=-1)
+                            interval_sums[level]['coverage'] += float(
+                                ((truths >= low) & (truths <= high)).sum().item()
+                            )
+                            interval_sums[level]['width'] += float((high - low).sum().item())
+                        interval_count += truths.numel()
+
+                        # These are the residuals in the model/evaluation scale
+                        # used for conditioning, not a Gaussian calibration proxy.
+                        residual = (mb_y - y_hat).detach().double()
+                        residual_sums['sum1'] += float(residual.sum().item())
+                        residual_sums['sum2'] += float(residual.square().sum().item())
+                        residual_sums['sum3'] += float(residual.pow(3).sum().item())
+                        residual_sums['count'] += residual.numel()
+
                         # sigma 指标：在 batch_y/y_hat/sigma 的同一尺度上计算（不 inverse_transform）
-                        sigma_metrics = compute_sigma_metrics(
-                            y=mb_y.detach().cpu(),
-                            mu=y_hat.detach().cpu(),
-                            sigma=sigma.detach().cpu(),
-                            interval_levels=list(interval_levels),
-                            pit_bins=pit_bins,
-                        )
-                        # 只保留关键指标，避免日志/面板过于拥挤
-                        for k, v in sigma_metrics.items():
-                            if sigma_metric_keys is not None and k not in sigma_metric_keys:
-                                continue
-                            sigma_sums[k] = sigma_sums.get(k, 0.0) + float(v)
-                        sigma_counts += 1
+                        if self.ablation_mode == 'location_scale':
+                            sigma_metrics = compute_sigma_metrics(
+                                y=mb_y.detach().cpu(),
+                                mu=y_hat.detach().cpu(),
+                                sigma=sigma.detach().cpu(),
+                                interval_levels=list(interval_levels),
+                                pit_bins=pit_bins,
+                            )
+                            for k, v in sigma_metrics.items():
+                                if sigma_metric_keys is not None and k not in sigma_metric_keys:
+                                    continue
+                                sigma_sums[k] = sigma_sums.get(k, 0.0) + float(v)
+                            sigma_counts += 1
 
                         if plot:
                             voutput = preds.permute(0, 3, 1, 2).detach().cpu().numpy()
@@ -523,6 +556,26 @@ class iReflowExp(ProbForecastExp):
         result = {name: float(metric.compute()) for name, metric in self.metrics.items()}
         if sigma_counts > 0:
             result.update({f"sigma_{k}": float(v / sigma_counts) for k, v in sigma_sums.items()})
+        if interval_count > 0:
+            for level, values in interval_sums.items():
+                suffix = str(int(level * 100))
+                result[f'coverage_{suffix}'] = values['coverage'] / interval_count
+                result[f'interval_width_{suffix}'] = values['width'] / interval_count
+        if residual_sums['count'] > 0:
+            count = residual_sums['count']
+            mean = residual_sums['sum1'] / count
+            variance = max(residual_sums['sum2'] / count - mean ** 2, 0.0)
+            central_third = (
+                residual_sums['sum3'] / count
+                - 3.0 * mean * (residual_sums['sum2'] / count)
+                + 2.0 * mean ** 3
+            )
+            skewness = central_third / (variance ** 1.5) if variance > 0.0 else 0.0
+            result.update({
+                'residual_mean': mean,
+                'residual_variance': variance,
+                'residual_skewness': skewness,
+            })
         return result
     
     def _val(self):
@@ -652,6 +705,8 @@ class iReflowExp(ProbForecastExp):
             self.class_strategy,
             0
         )
+        if self.ablation_mode == 'mean_only':
+            setting = f"{setting}_mean_only"
         return setting
     
     def _load_uncertainty_estimator(self, setting):
@@ -664,6 +719,10 @@ class iReflowExp(ProbForecastExp):
         Args:
             setting: 实验设置字符串
         """
+        if self.ablation_mode == 'mean_only':
+            print('Mean-only: skipping Stage 2 uncertainty-estimator loading.')
+            return
+
         # 构建 Stage 2 的 checkpoint 路径
         # 注意：这里假设 Stage 2 使用了相同的 setting 和 seed
         # 路径格式：./results/runs/estimator/{dataset}/{setting}/seed_{seed}/best_model.pth
@@ -715,7 +774,8 @@ class iReflowExp(ProbForecastExp):
         只加载 iTransformer 的权重（用于 Stage 2 和 Stage 3）
         路径规则：os.path.join(self.checkpoints, setting) + '/checkpoint.pth'
         """
-        path = os.path.join(self.checkpoints, setting)
+        stage1_setting = setting.removesuffix('_mean_only')
+        path = os.path.join(self.checkpoints, stage1_setting)
         best_model_path = os.path.join(path, 'checkpoint.pth')
         
         if not os.path.exists(best_model_path):
@@ -725,6 +785,7 @@ class iReflowExp(ProbForecastExp):
             )
         
         print(f'Loading iTransformer weights from {best_model_path}')
+        self._write_stage1_provenance(best_model_path)
         # 使用 weights_only=True 因为 iTransformer checkpoint 只包含模型权重
         checkpoint = torch.load(best_model_path, map_location=self.device, weights_only=True)
         
@@ -817,6 +878,23 @@ class iReflowExp(ProbForecastExp):
                 print(f'Warning: Unexpected keys: {unexpected_keys[:5]}...' if len(unexpected_keys) > 5 else f'Warning: Unexpected keys: {unexpected_keys}')
             
             print('iTransformer weights extracted successfully.')
+
+    def _write_stage1_provenance(self, checkpoint_path):
+        """Persist the frozen Mean-only conditioner identity for later audit."""
+        if self.ablation_mode != 'mean_only':
+            return
+        digest = hashlib.sha256()
+        with open(checkpoint_path, 'rb') as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+                digest.update(chunk)
+        os.makedirs(self.run_save_dir, exist_ok=True)
+        metadata_path = os.path.join(self.run_save_dir, 'stage1_checkpoint.json')
+        with open(metadata_path, 'w', encoding='utf-8') as handle:
+            json.dump(
+                {'path': os.path.abspath(checkpoint_path), 'sha256': digest.hexdigest()},
+                handle,
+                indent=2,
+            )
 
     def _set_mode_specific_run_paths(self, mode: int):
         """将训练/测试产物重定向到 train_mode_{mode} 子目录。"""

@@ -25,6 +25,7 @@ import numpy as np
 import properscoring as ps
 import torch
 import yaml
+from setproctitle import setproctitle
 
 
 
@@ -41,6 +42,15 @@ EXTRA_COLUMNS = [
     "validation_mean_abs_alpha", "status", "failure_reason",
 ]
 CSV_COLUMNS = REQUIRED_COLUMNS + EXTRA_COLUMNS
+
+
+def set_process_title(datasets: Sequence[str], runs_per_dataset: int) -> str:
+    """Expose the pilot's dataset and assigned CUDA device in process listings."""
+    dataset_label = ",".join(datasets)
+    gpu_label = os.environ.get("CUDA_VISIBLE_DEVICES", "all")
+    title = f"iReflow-L3:{dataset_label}:gpu={gpu_label}:runs={runs_per_dataset}"
+    setproctitle(title)
+    return title
 
 
 def reproducible(seed: int) -> None:
@@ -409,6 +419,7 @@ def main() -> None:
     parser.add_argument("--runs_per_dataset", type=int, default=1)
     parser.add_argument("--datasets", nargs="*", choices=DATASETS, default=list(DATASETS))
     args = parser.parse_args()
+    set_process_title(args.datasets, args.runs_per_dataset)
     repo_root = Path(__file__).resolve().parents[2]
     selected_run_ids = run_ids(args.runs_per_dataset)
     entries = load_manifest(repo_root / args.manifest, repo_root, args.datasets, selected_run_ids)

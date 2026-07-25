@@ -48,6 +48,9 @@ for index in "${!DATASETS[@]}"; do
   gpu="${GPU_IDS[$((index % ${#GPU_IDS[@]}))]}"
   echo "Launching ${dataset} on physical GPU ${gpu}"
   (
+    # Make CUDA ordinal IDs match the PCI-bus-order IDs displayed by
+    # nvidia-smi, rather than CUDA's default FASTEST_FIRST ordering.
+    export CUDA_DEVICE_ORDER=PCI_BUS_ID
     export CUDA_VISIBLE_DEVICES="${gpu}"
     conda run --no-capture-output -n "${CONDA_ENV}" \
       bash "${REPO_ROOT}/scripts/iReflow/run_third_order_shape_pilot.sh" \

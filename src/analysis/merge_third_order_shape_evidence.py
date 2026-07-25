@@ -15,12 +15,13 @@ def main() -> None:
     parser.add_argument("--input_root", default="evidence/shape_decomposition_shards")
     parser.add_argument("--output_root", default="evidence")
     parser.add_argument("--runs_per_dataset", type=int, default=1)
+    parser.add_argument("--datasets", nargs="*", choices=DATASETS, default=list(DATASETS))
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parents[2]
     rows = []
     seen = set()
-    for dataset in DATASETS:
+    for dataset in args.datasets:
         shard = repo_root / args.input_root / dataset / "shape_decomposition_per_seed.csv"
         if not shard.is_file():
             raise FileNotFoundError(f"Missing evidence shard for {dataset}: {shard}")
@@ -34,7 +35,7 @@ def main() -> None:
                     raise ValueError(f"Duplicate evidence row: {key}")
                 seen.add(key)
                 rows.append(row)
-    write_outputs(rows, repo_root / args.output_root, DATASETS, args.runs_per_dataset)
+    write_outputs(rows, repo_root / args.output_root, args.datasets, args.runs_per_dataset)
 
 
 if __name__ == "__main__":

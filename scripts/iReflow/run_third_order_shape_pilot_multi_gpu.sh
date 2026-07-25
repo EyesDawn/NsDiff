@@ -8,17 +8,20 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 CONDA_ENV="${CONDA_ENV:-NsDiff}"
 GPU_IDS_STRING="${GPU_IDS:-0 1 2}"
 read -r -a GPU_IDS <<< "${GPU_IDS_STRING}"
+DATASETS_STRING="${DATASETS:-ETTh1 ETTh2 ETTm1 ETTm2 Electricity SolarEnergy Traffic Weather}"
+read -r -a DATASETS <<< "${DATASETS_STRING}"
+RUNS_PER_DATASET="${RUNS_PER_DATASET:-1}"
 
 if [[ ${#GPU_IDS[@]} -eq 0 ]]; then
   echo "GPU_IDS must contain at least one GPU index" >&2
   exit 2
 fi
 
-DATASETS=(ETTh1 ETTh2 ETTm1 ETTm2 Electricity SolarEnergy Traffic Weather)
 TIMESTAMP="$(date -u +%Y%m%d_%H%M%S)"
 SHARD_ROOT="${SHARD_ROOT:-evidence/shape_decomposition_shards/${TIMESTAMP}}"
 RUN_ROOT="${RUN_ROOT:-results/third_order_shape/${TIMESTAMP}}"
 LOG_ROOT="${LOG_ROOT:-results/logs/third_order_shape/${TIMESTAMP}}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-evidence}"
 mkdir -p "${REPO_ROOT}/${LOG_ROOT}"
 
 export PYTHONPATH="${REPO_ROOT}"
@@ -49,7 +52,7 @@ for index in "${!DATASETS[@]}"; do
     conda run --no-capture-output -n "${CONDA_ENV}" \
       bash "${REPO_ROOT}/scripts/iReflow/run_third_order_shape_pilot.sh" \
       --datasets "${dataset}" \
-      --runs_per_dataset 1 \
+      --runs_per_dataset "${RUNS_PER_DATASET}" \
       --output_root "${SHARD_ROOT}/${dataset}" \
       --run_root "${RUN_ROOT}" \
       "$@"
@@ -70,7 +73,8 @@ fi
 conda run --no-capture-output -n "${CONDA_ENV}" \
   python "${REPO_ROOT}/src/analysis/merge_third_order_shape_evidence.py" \
   --input_root "${SHARD_ROOT}" \
-  --output_root evidence \
-  --runs_per_dataset 1
+  --output_root "${OUTPUT_ROOT}" \
+  --runs_per_dataset "${RUNS_PER_DATASET}" \
+  --datasets "${DATASETS[@]}"
 
-echo "Completed. Consolidated evidence: ${REPO_ROOT}/evidence/shape_decomposition.{md,per_seed.csv}"
+echo "Completed. Consolidated evidence: ${REPO_ROOT}/${OUTPUT_ROOT}/shape_decomposition.{md,per_seed.csv}"

@@ -1,8 +1,7 @@
-# Single-seed pilot manifest.  Entries were resolved from the existing
-# iReflow-e2e logs and their SHA-256 values were computed locally on 2026-07-24.
-# The runner verifies each hash before it starts, so this is the only L2 source
-# used by the L3 pilot.  To restore the full five-run design, add l2_2..l2_5
-# and launch with --runs_per_dataset 5.
+# L2 checkpoint manifest.  Entries were resolved from their output.log seed
+# records and their SHA-256 values were computed locally.  The runner verifies
+# each hash before it starts, so this is the only L2 source used by the L3
+# pilot.
 datasets:
   ETTh1:
     l2_1:
@@ -40,12 +39,52 @@ datasets:
       sha256: 08127d3105a13a1078daead2e53d0ea12baebc339029308724e075c4eca80ef9
       config_path: configs/iReflow_e2e/solar_energy.yaml
       l3_seed: 1
+    l2_2:
+      checkpoint: results/runs/iReflow/SolarEnergy/w96h1s192/3012552e94a4cf81dba5a402bbb8544a/train_mode_1/best_model.pth
+      sha256: 0e4167d5116419144746b719a01e3b070524e2fbf4f45262c09035ac074f1b0f
+      config_path: configs/iReflow_e2e/solar_energy.yaml
+      l3_seed: 2020
+    l2_3:
+      checkpoint: results/runs/iReflow/SolarEnergy/w96h1s192/5d68345b4a0daeec231ce6fa083b5850/train_mode_1/best_model.pth
+      sha256: a8058c059a78e5b8dcb27fb9075010d6c7d85836d13dd0afb02d48e9d62693aa
+      config_path: configs/iReflow_e2e/solar_energy.yaml
+      l3_seed: 2025
+    l2_4:
+      checkpoint: results/runs/iReflow/SolarEnergy/w96h1s192/c6b9d010e48e367adf134ab865fb97fa/train_mode_1/best_model.pth
+      sha256: a1b2c1ba38d2dcf5e9fb7bdafa860e5b7ffd5b20ac2931b3c8e6282dac278171
+      config_path: configs/iReflow_e2e/solar_energy.yaml
+      l3_seed: 2026
+    l2_5:
+      checkpoint: results/runs/iReflow/SolarEnergy/w96h1s192/86f5547330260d3f964d27cca7f73fd0/train_mode_1/best_model.pth
+      sha256: b0551d0df8bfc241e92a6129120eeb0b53741254c26b5f31038d31b5d7683c31
+      config_path: configs/iReflow_e2e/solar_energy.yaml
+      l3_seed: 2027
   Traffic:
     l2_1:
-      checkpoint: results/runs/iReflow/Traffic/w96h1s192/e1f97e540332ca38a8015afc54cfdef1/train_mode_2/best_model.pth
-      sha256: 6a7e1c5b041459243c47fa143f5fca8cc6b085d89b62283851acba31a44c6db0
+      checkpoint: results/runs/iReflow/Traffic/w96h1s192/5af982ef4abf1d49c8641e23d4c8bf62/train_mode_1/best_model.pth
+      sha256: e2ae7a28a41a0b42101cddf2780dc486473ffbc8f14e761ea338565fb956c490
       config_path: configs/iReflow_e2e/traffic.yaml
-      l3_seed: 1
+      l3_seed: 2022
+    l2_2:
+      checkpoint: results/runs/iReflow/Traffic/w96h1s192/9ede84ebb9c06bf77121406b8a8bee7a/train_mode_1/best_model.pth
+      sha256: 82c09ddc60848930c03a159d7ee2359d2a6b5e787a30e5ccc138d43e4cea5321
+      config_path: configs/iReflow_e2e/traffic.yaml
+      l3_seed: 2023
+    l2_3:
+      checkpoint: results/runs/iReflow/Traffic/w96h1s192/c8449811b0533e7e732c15cfd1c45932/train_mode_1/best_model.pth
+      sha256: 56fa103fc7a17ba2427886090f7873149eb7feaf50e693f5349ab7293b07cb6c
+      config_path: configs/iReflow_e2e/traffic.yaml
+      l3_seed: 2024
+    l2_4:
+      checkpoint: results/runs/iReflow/Traffic/w96h1s192/c475fec8e0fd5802c8413b5b8402f406/train_mode_1/best_model.pth
+      sha256: 0f3b9580d28c1b2baaec3d8b5af0685cbb327a7f370c21f5f0a2417ca577f8eb
+      config_path: configs/iReflow_e2e/traffic.yaml
+      l3_seed: 2025
+    l2_5:
+      checkpoint: results/runs/iReflow/Traffic/w96h1s192/5986571759a7ab5211e1556bbd0678ea/train_mode_1/best_model.pth
+      sha256: 3a8fe661965ad0c88c420be0a6e3262278b278526160e8e3e2f7a0b75da458ab
+      config_path: configs/iReflow_e2e/traffic.yaml
+      l3_seed: 2026
   Weather:
     l2_1:
       checkpoint: results/runs/iReflow/Weather/w96h1s192/09050d9b1d6182ca06caba7c5c489149/train_mode_2/best_model.pth

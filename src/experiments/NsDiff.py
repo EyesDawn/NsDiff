@@ -11,6 +11,7 @@ import src.layer.mu_backbone as ns_Transformer
 import argparse
 import src.layer.g_backbone as G
 from src.experiments.prob_forecast import ProbForecastExp
+from src.metrics import EnergyScore
 from torchmetrics import MeanAbsoluteError, MeanSquaredError, MetricCollection
 from torch.optim import *
 from tqdm import tqdm
@@ -25,6 +26,12 @@ from torch_timeseries.utils.early_stop import EarlyStopping
 from src.layer.nsdiff_utils import q_sample, p_sample_loop, cal_sigma12, cal_sigma_tilde, cal_forward_noise
 import yaml
 import numpy as np
+
+# torch_timeseries still uses the NumPy 1.x alias np.Inf in EarlyStopping.
+# Keep the experiment entrypoint compatible with NumPy 2.x.
+if not hasattr(np, "Inf"):
+    np.Inf = np.inf
+
 import torch.distributed as dist
 import torch
 from tqdm import tqdm
@@ -33,7 +40,7 @@ from types import SimpleNamespace
 from src.utils.sigma import wv_sigma, wv_sigma_trailing
 
 
-def resolve_pretrained_checkpoint(group, dataset_type, windows, pred_len):
+def resolve_pretrained_checkpoint(group, dataset_type, windows, pred_len, seed=None):
     base_dir = os.path.join(
         ".", "results", "runs", group, dataset_type, f"w{windows}h1s{pred_len}"
     )
@@ -41,6 +48,14 @@ def resolve_pretrained_checkpoint(group, dataset_type, windows, pred_len):
         raise FileNotFoundError(
             f"Pretrained directory does not exist: {base_dir}"
         )
+
+    if seed is not None:
+        checkpoint_path = os.path.join(base_dir, str(seed), "best_model.pth")
+        if not os.path.isfile(checkpoint_path):
+            raise FileNotFoundError(
+                f"No pretrained checkpoint for seed={seed} at {checkpoint_path}"
+            )
+        return checkpoint_path
 
     candidates = []
     for run_name in sorted(os.listdir(base_dir), key=lambda name: int(name) if name.isdigit() else name):
@@ -128,10 +143,17 @@ class NsDiffParameters:
     p_hidden_layers : int = 2
     rolling_length : int = 96
     load_pretrain : bool = False
+    pretrain_seed : int = None
 
 @dataclass
 class NsDiffForecast(ProbForecastExp, NsDiffParameters):
     model_type: str = "NsDiff4"
+
+    def _init_metrics(self):
+        super()._init_metrics()
+        self.metrics.add_metrics({"es": EnergyScore()})
+        self.metrics.to("cpu")
+
     def _init_model(self):
         self.label_len = self.windows // 2
         args_dict = {
@@ -183,10 +205,10 @@ class NsDiffForecast(ProbForecastExp, NsDiffParameters):
         
         if self.load_pretrain:
             model_f_path = resolve_pretrained_checkpoint(
-                "F", self.dataset_type, self.windows, self.pred_len
+                "F", self.dataset_type, self.windows, self.pred_len, self.pretrain_seed
             )
             model_g_path = resolve_pretrained_checkpoint(
-                "G", self.dataset_type, self.windows, self.pred_len
+                "G", self.dataset_type, self.windows, self.pred_len, self.pretrain_seed
             )
             print("using pretrained model...")
             print(f"f(x): {model_f_path}")

@@ -9,6 +9,12 @@ import time
 from typing import Dict, List, Type, Union
 
 import numpy as np
+
+# torch_timeseries still uses the NumPy 1.x alias np.Inf in EarlyStopping.
+# Keep the experiment entrypoint compatible with NumPy 2.x.
+if not hasattr(np, "Inf"):
+    np.Inf = np.inf
+
 import pandas as pd
 import torch
 from torchmetrics import MeanAbsoluteError, MeanSquaredError, MetricCollection
@@ -47,7 +53,7 @@ class NsDiffFParameters:
 @dataclass
 class GForecast(ForecastExp, NsDiffFParameters):
     model_type: str = "G"
-    
+
     def _init_model(self):
         self.model = G.SigmaEstimation(self.windows, self.pred_len, self.dataset.num_features, 
                                                 self.hidden_size, self.rolling_length).float().to(self.device)
@@ -89,4 +95,3 @@ if __name__ == "__main__":
     import fire
     # torch.multiprocessing.set_start_method('spawn')# good solution !!!!
     fire.Fire(GForecast)
-    

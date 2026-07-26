@@ -9,6 +9,12 @@ import time
 from typing import Dict, List, Type, Union
 
 import numpy as np
+
+# torch_timeseries still uses the NumPy 1.x alias np.Inf in EarlyStopping.
+# Keep the experiment entrypoint compatible with NumPy 2.x.
+if not hasattr(np, "Inf"):
+    np.Inf = np.inf
+
 import pandas as pd
 import torch
 from torchmetrics import MeanAbsoluteError, MeanSquaredError, MetricCollection
@@ -108,7 +114,7 @@ class FForecast(ForecastExp, NsDiffFParameters):
 
     def _run_identifier(self, seed) -> str:
         return str(seed)
-    
+
     def _process_one_batch(
         self,
         batch_x,
@@ -154,4 +160,3 @@ if __name__ == "__main__":
     import fire
     # torch.multiprocessing.set_start_method('spawn')# good solution !!!!
     fire.Fire(FForecast)
-    

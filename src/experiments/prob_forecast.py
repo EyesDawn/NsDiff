@@ -170,17 +170,9 @@ class ProbForecastExp(ForecastExp):
                 batch_x_date_enc = batch_x_date_enc.to(self.device).float()
                 batch_y_date_enc = batch_y_date_enc.to(self.device).float()
 
-                start = time.time()
-                print(batch_x.shape)
-                print(batch_x_date_enc.shape)
-                
                 preds, truths = self._process_val_batch(
                     batch_x, batch_y, batch_x_date_enc, batch_y_date_enc
                 )
-
-                end = time.time()
-                print(end-start)
-                assert 0
                 
                 if self.invtrans_loss:
                     preds = self.scaler.inverse_transform(preds)

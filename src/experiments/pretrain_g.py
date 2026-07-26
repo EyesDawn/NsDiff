@@ -59,7 +59,10 @@ class GForecast(ForecastExp, NsDiffFParameters):
                                                 self.hidden_size, self.rolling_length).float().to(self.device)
 
     def _run_identifier(self, seed) -> str:
-        return str(seed)
+        # SigmaEstimation's MLP input width depends on rolling_length.  Keep
+        # checkpoints from different kernel sizes isolated even when the data
+        # split and random seed are identical.
+        return f"{seed}_r{self.rolling_length}"
     
     def _process_one_batch(
         self,

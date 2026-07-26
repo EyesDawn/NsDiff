@@ -112,7 +112,8 @@ run_pipeline() {
       runs --seeds="[${SEED}]"
     conda run --no-capture-output -n "${CONDA_ENV}" python ./src/experiments/pretrain_g.py \
       --dataset_type="${dataset}" --device=cuda:0 --batch_size="${batch_g}" \
-      --horizon=1 --pred_len="${pred_len}" --windows="${windows}" --epochs=20 --patience=5 \
+      --horizon=1 --pred_len="${pred_len}" --windows="${windows}" --rolling_length="${rolling_length}" \
+      --epochs=20 --patience=5 \
       runs --seeds="[${SEED}]"
 
     main_args=(

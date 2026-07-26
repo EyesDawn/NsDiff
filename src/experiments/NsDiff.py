@@ -40,7 +40,9 @@ from types import SimpleNamespace
 from src.utils.sigma import wv_sigma, wv_sigma_trailing
 
 
-def resolve_pretrained_checkpoint(group, dataset_type, windows, pred_len, seed=None):
+def resolve_pretrained_checkpoint(
+    group, dataset_type, windows, pred_len, seed=None, rolling_length=None
+):
     base_dir = os.path.join(
         ".", "results", "runs", group, dataset_type, f"w{windows}h1s{pred_len}"
     )
@@ -50,7 +52,10 @@ def resolve_pretrained_checkpoint(group, dataset_type, windows, pred_len, seed=N
         )
 
     if seed is not None:
-        checkpoint_path = os.path.join(base_dir, str(seed), "best_model.pth")
+        run_name = str(seed)
+        if group == "G" and rolling_length is not None:
+            run_name = f"{seed}_r{rolling_length}"
+        checkpoint_path = os.path.join(base_dir, run_name, "best_model.pth")
         if not os.path.isfile(checkpoint_path):
             raise FileNotFoundError(
                 f"No pretrained checkpoint for seed={seed} at {checkpoint_path}"
@@ -58,7 +63,10 @@ def resolve_pretrained_checkpoint(group, dataset_type, windows, pred_len, seed=N
         return checkpoint_path
 
     candidates = []
-    for run_name in sorted(os.listdir(base_dir), key=lambda name: int(name) if name.isdigit() else name):
+    for run_name in sorted(
+        os.listdir(base_dir),
+        key=lambda name: (not name.isdigit(), int(name) if name.isdigit() else name),
+    ):
         checkpoint_path = os.path.join(base_dir, run_name, "best_model.pth")
         if os.path.isfile(checkpoint_path):
             candidates.append(checkpoint_path)
@@ -208,7 +216,12 @@ class NsDiffForecast(ProbForecastExp, NsDiffParameters):
                 "F", self.dataset_type, self.windows, self.pred_len, self.pretrain_seed
             )
             model_g_path = resolve_pretrained_checkpoint(
-                "G", self.dataset_type, self.windows, self.pred_len, self.pretrain_seed
+                "G",
+                self.dataset_type,
+                self.windows,
+                self.pred_len,
+                self.pretrain_seed,
+                self.rolling_length,
             )
             print("using pretrained model...")
             print(f"f(x): {model_f_path}")

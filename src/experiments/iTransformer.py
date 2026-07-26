@@ -13,11 +13,6 @@ except:
 
 if __name__ == '__main__':
     setproctitle.setproctitle('iTransformer')
-    fix_seed = 2023
-    random.seed(fix_seed)
-    torch.manual_seed(fix_seed)
-    np.random.seed(fix_seed)
-
     parser = argparse.ArgumentParser(description='iTransformer')
 
     # basic config
@@ -99,8 +94,13 @@ if __name__ == '__main__':
     
     # wandb
     parser.add_argument('--wandb_project', type=str, default=None, help='wandb project name')
+    parser.add_argument('--seed', type=int, default=2023, help='random seed')
 
     args = parser.parse_args()
+    fix_seed = args.seed
+    random.seed(fix_seed)
+    torch.manual_seed(fix_seed)
+    np.random.seed(fix_seed)
     args.use_gpu = True if torch.cuda.is_available() and args.use_gpu else False
 
     if args.use_gpu and args.use_multi_gpu:

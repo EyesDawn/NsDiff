@@ -27,6 +27,7 @@ STAGE2_CHECKPOINTS="${STAGE2_CHECKPOINTS:-${CHECKPOINTS}}"
 STAGE3_CHECKPOINTS="${STAGE3_CHECKPOINTS:-${CHECKPOINTS}}"
 
 STAGE1_LR="${STAGE1_LR:-0.0001}"
+STAGE1_SEED="${STAGE1_SEED:-2020}"
 STAGE2_LR="${STAGE2_LR:-0.0001}"
 STAGE3_LR="${STAGE3_LR:-0.0001}"
 
@@ -70,15 +71,15 @@ run_stage1() {
         --d_model "${D_MODEL}"
         --d_ff "${D_FF}"
         --batch_size "${BATCH_SIZE}"
-        --lr "${STAGE1_LR}"
+        --learning_rate "${STAGE1_LR}"
         --itr "${ITR}"
         --checkpoints "${STAGE1_CHECKPOINTS}"
         --n_heads "${N_HEADS}"
         --dropout "${DROPOUT}"
-        --epochs "${EPOCHS}"
+        --train_epochs "${EPOCHS}"
         --patience "${PATIENCE}"
-        --device "${DEVICE}"
-        runs "--seeds=${SEEDS}"
+        --lr_patience "${LR_PATIENCE}"
+        --seed "${STAGE1_SEED}"
     )
 
     (

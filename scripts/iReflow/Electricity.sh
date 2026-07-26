@@ -9,7 +9,8 @@ DATASET="Electricity"
 DATA_PATH="electricity/electricity.csv"
 ROOT_PATH="./data/"
 
-MODEL_ID="electricity_96_192"
+PRED_LEN="${PRED_LEN:-192}"
+MODEL_ID="${MODEL_ID:-electricity_96_${PRED_LEN}}"
 MODEL_NAME="iReflow"
 D_FEATURES="M"
 ENC_IN=321
@@ -35,7 +36,6 @@ NUM_SAMPLES=100
 X0_DIST="pred_gaussian"
 
 SEQ_LEN=96
-PRED_LEN=192
 HORIZON=1
 
 GPU_ID="${GPU_ID:-2}"

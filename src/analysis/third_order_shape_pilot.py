@@ -22,10 +22,11 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Sequence, Tuple
 
 import numpy as np
-import properscoring as ps
 import torch
 import yaml
 from setproctitle import setproctitle
+
+from src.metrics import CRPS, CRPSSum, EnergyScore
 
 
 
@@ -189,19 +190,6 @@ class OnlineMoments:
         return float(central_3 / variance ** 1.5), float(central_4 / variance ** 2 - 3.0)
 
 
-def energy_score(samples: torch.Tensor, truth: torch.Tensor) -> torch.Tensor:
-    """Exact empirical energy score, evaluated one ensemble member at a time."""
-    flat_samples = samples.flatten(start_dim=2)
-    flat_truth = truth.flatten(start_dim=1)
-    first = torch.linalg.vector_norm(flat_samples - flat_truth.unsqueeze(1), dim=-1).mean(dim=1)
-    pair_sum = torch.zeros_like(first)
-    for index in range(flat_samples.shape[1]):
-        distances = torch.linalg.vector_norm(flat_samples[:, index:index + 1] - flat_samples, dim=-1)
-        pair_sum += distances.sum(dim=1)
-    second = pair_sum / (flat_samples.shape[1] ** 2)
-    return first - 0.5 * second
-
-
 def _batch_to_device(batch, device: torch.device):
     batch_x, batch_y, _, origin_y, batch_x_date, _ = batch
     return (
@@ -209,65 +197,78 @@ def _batch_to_device(batch, device: torch.device):
     )
 
 
+def iter_microbatches(
+    batch_x: torch.Tensor,
+    batch_y: torch.Tensor,
+    origin_y: torch.Tensor,
+    batch_x_date: torch.Tensor,
+    micro_batch_size: int,
+):
+    """Yield contiguous evaluation micro-batches without changing sample order."""
+    for start in range(0, batch_x.shape[0], micro_batch_size):
+        stop = start + micro_batch_size
+        yield batch_x[start:stop], batch_y[start:stop], origin_y[start:stop], batch_x_date[start:stop]
+
+
 @torch.no_grad()
 def evaluate(
     model, experiment: iReflowExp, dataloader, design: str, num_samples: int, temperature: float
 ) -> Dict[str, float]:
-    totals = {"crps": 0.0, "crps_sum": 0.0, "crps_sum_denom": 0.0, "mse": 0.0, "mae": 0.0, "es": 0.0}
+    totals = {"mse": 0.0, "mae": 0.0}
     point_count = 0
     window_count = 0
     coverage_counts = {0.90: 0.0, 0.95: 0.0, 0.99: 0.0}
     width_sums = {0.90: 0.0, 0.95: 0.0, 0.99: 0.0}
     before, after = OnlineMoments(), OnlineMoments()
+    micro_batch_size = max(1, int(getattr(experiment, "eval_micro_batch_size", 1)))
+    crps_metric = CRPS()
+    crps_sum_metric = CRPSSum(normalize=True)
+    energy_score_metric = EnergyScore()
 
     model.eval()
     for batch in dataloader:
         batch_x, batch_y, origin_y, batch_x_date = _batch_to_device(batch, experiment.device)
-        if design == "l2":
-            samples, mu, sigma, _, _ = model.forecast(batch_x, batch_x_date, num_samples=num_samples, temperature=temperature)
-            z2 = (batch_y - mu) / sigma
-            z3 = z2
-        else:
-            samples, mu, sigma, alpha = model.forecast(batch_x, batch_x_date, num_samples=num_samples, temperature=temperature)
-            z2 = (batch_y - mu) / sigma
-            z3 = model.transform(z2, alpha)
-        before.update(z2)
-        after.update(z3)
+        for batch_x, batch_y, origin_y, batch_x_date in iter_microbatches(
+            batch_x, batch_y, origin_y, batch_x_date, micro_batch_size
+        ):
+            if design == "l2":
+                samples, mu, sigma, _, _ = model.forecast(batch_x, batch_x_date, num_samples=num_samples, temperature=temperature)
+                z2 = (batch_y - mu) / sigma
+                z3 = z2
+            else:
+                samples, mu, sigma, alpha = model.forecast(batch_x, batch_x_date, num_samples=num_samples, temperature=temperature)
+                z2 = (batch_y - mu) / sigma
+                z3 = model.transform(z2, alpha)
+            before.update(z2)
+            after.update(z3)
 
-        prediction = samples.permute(0, 2, 3, 1).contiguous()
-        truth = batch_y
-        if experiment.invtrans_loss:
-            prediction = experiment.scaler.inverse_transform(prediction)
-            truth = origin_y
-        samples_eval = prediction.permute(0, 3, 1, 2).contiguous()
-        prediction_cpu = prediction.detach().cpu()
-        truth_cpu = truth.detach().cpu()
-        prediction_np = prediction_cpu.reshape(-1, num_samples).numpy()
-        truth_np = truth_cpu.reshape(-1).numpy()
-        totals["crps"] += float(ps.crps_ensemble(truth_np, prediction_np).sum())
-        summed_prediction = prediction_cpu.sum(dim=2).reshape(-1, num_samples).numpy()
-        summed_truth = truth_cpu.sum(dim=2).reshape(-1).numpy()
-        totals["crps_sum"] += float(ps.crps_ensemble(summed_truth, summed_prediction).sum())
-        totals["crps_sum_denom"] += float(np.abs(summed_truth).sum())
-        ensemble_mean = samples_eval.mean(dim=1)
-        totals["mse"] += float((ensemble_mean - truth).square().sum().cpu())
-        totals["mae"] += float((ensemble_mean - truth).abs().sum().cpu())
-        totals["es"] += float(energy_score(samples_eval, truth).sum().cpu())
-        point_count += int(truth.numel())
-        window_count += int(truth.shape[0])
+            prediction = samples.permute(0, 2, 3, 1).contiguous()
+            truth = batch_y
+            if experiment.invtrans_loss:
+                prediction = experiment.scaler.inverse_transform(prediction)
+                truth = origin_y
+            samples_eval = prediction.permute(0, 3, 1, 2).contiguous()
+            crps_metric.update(prediction, truth)
+            crps_sum_metric.update(prediction, truth)
+            energy_score_metric.update(prediction, truth)
+            ensemble_mean = samples_eval.mean(dim=1)
+            totals["mse"] += float((ensemble_mean - truth).square().sum().cpu())
+            totals["mae"] += float((ensemble_mean - truth).abs().sum().cpu())
+            point_count += int(truth.numel())
+            window_count += int(truth.shape[0])
 
-        for level in coverage_counts:
-            lower = torch.quantile(samples_eval, (1.0 - level) / 2.0, dim=1)
-            upper = torch.quantile(samples_eval, 1.0 - (1.0 - level) / 2.0, dim=1)
-            coverage_counts[level] += float(((truth >= lower) & (truth <= upper)).sum().cpu())
-            width_sums[level] += float((upper - lower).sum().cpu())
+            for level in coverage_counts:
+                lower = torch.quantile(samples_eval, (1.0 - level) / 2.0, dim=1)
+                upper = torch.quantile(samples_eval, 1.0 - (1.0 - level) / 2.0, dim=1)
+                coverage_counts[level] += float(((truth >= lower) & (truth <= upper)).sum().cpu())
+                width_sums[level] += float((upper - lower).sum().cpu())
 
     skew_before, kurt_before = before.shape()
     skew_after, kurt_after = after.shape()
     result = {
-        "CRPS": totals["crps"] / point_count,
-        "CRPS_sum": totals["crps_sum"] / totals["crps_sum_denom"] if totals["crps_sum_denom"] else float("nan"),
-        "ES": totals["es"] / window_count,
+        "CRPS": float(crps_metric.compute()),
+        "CRPS_sum": float(crps_sum_metric.compute()),
+        "ES": float(energy_score_metric.compute()),
         "MSE": totals["mse"] / point_count,
         "MAE": totals["mae"] / point_count,
         "skewness_before": skew_before,
@@ -380,6 +381,9 @@ def run_entry(repo_root: Path, dataset: str, run_id: str, entry: Mapping[str, ob
     mutable_entry["run_id"] = run_id
     seed = int(entry["l3_seed"])
     experiment = build_experiment(repo_root / str(entry["config_path"]), args.data_root, seed)
+    # Traffic's 100-member ensemble is too large for the regular loader batch
+    # on this host.  This changes only how evaluation work is partitioned.
+    experiment.eval_micro_batch_size = args.eval_micro_batch_size
     checkpoint = repo_root / str(entry["checkpoint"])
     experiment.model.load_state_dict(state_dict_from_checkpoint(checkpoint, experiment.device), strict=True)
     l2_row = row_base(dataset, mutable_entry, "l2", commit)
@@ -417,8 +421,16 @@ def main() -> None:
     parser.add_argument("--run_root", default="results/third_order_shape")
     parser.add_argument("--nll_weight", type=float, default=1.0)
     parser.add_argument("--runs_per_dataset", type=int, default=1)
+    parser.add_argument(
+        "--eval_micro_batch_size",
+        type=int,
+        default=1,
+        help="Forecast windows evaluated together; 1 avoids Traffic ensemble-memory OOM.",
+    )
     parser.add_argument("--datasets", nargs="*", choices=DATASETS, default=list(DATASETS))
     args = parser.parse_args()
+    if args.eval_micro_batch_size < 1:
+        parser.error("--eval_micro_batch_size must be at least 1")
     set_process_title(args.datasets, args.runs_per_dataset)
     repo_root = Path(__file__).resolve().parents[2]
     selected_run_ids = run_ids(args.runs_per_dataset)

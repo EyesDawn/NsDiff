@@ -134,6 +134,15 @@ def main():
 
     md_path = Path(args.output_md)
     md_path.parent.mkdir(parents=True, exist_ok=True)
+    completed = {
+        dataset: sum(
+            row["dataset"] == dataset and row["status"] == "success" for row in rows
+        )
+        for dataset in DATASETS
+    }
+    completion_status = ", ".join(
+        f"{dataset} {completed[dataset]}/{len(SEEDS)}" for dataset in DATASETS
+    )
     md_path.write_text(
         "# Mean-only ablation evidence\n\n"
         "Mean-only uses a fixed unit scale for residual coordinates, source noise, and inverse mapping. "
@@ -141,7 +150,7 @@ def main():
         "## Mean-only (mean ± sample standard deviation across completed seeds)\n\n"
         + render_summary(rows)
         + "\n\n## Status\n\n"
-        "- Completed scope: ETTm1, ETTm2, Weather, Electricity; three fixed seeds (2022–2024).\n"
+        f"- Completed Mean-only seeds: {completion_status}.\n"
         "- Not run in this batch: ETTh1, ETTh2, SolarEnergy, Traffic.\n"
         "- Do not infer a Location--scale advantage until compatible external results are merged.\n",
         encoding="utf-8",

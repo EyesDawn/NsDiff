@@ -1,7 +1,8 @@
 import torch
 from torchmetrics import Metric
-import properscoring as ps
 import numpy as np
+
+from .CRPS import ensemble_crps_sum
 
 class CRPSSum(Metric):
     def __init__(self, normalize=False, dist_sync_on_step=False):
@@ -36,12 +37,9 @@ class CRPSSum(Metric):
         pred_np = pred_flat.detach().cpu().numpy()
         true_np = true_flat.detach().cpu().numpy()
         
-        # vectorized calculation of CRPS using properscoring
-        crps_values = ps.crps_ensemble(true_np, pred_np)
-        
         # Accumulate CRPS values
-        batch_crps_sum = crps_values.sum()
-        self.total_crps += torch.tensor(batch_crps_sum, device=self.device)
+        batch_crps_sum = ensemble_crps_sum(true_np, pred_np)
+        self.total_crps += torch.as_tensor(batch_crps_sum, device=self.device)
         
         if self.normalize:
             # Accumulate denominator (L1 norm of true values)

@@ -11,11 +11,13 @@ CHECKPOINTS="${CHECKPOINTS:-./results/runs/iTransformer/}"
 WANDB_PROJECT="${WANDB_PROJECT:-iReflow-MeanOnly}"
 # Distinct GPUs run in parallel; datasets sharing one GPU remain serial.
 GPU_MAP="${GPU_MAP:-ETTm1=0,ETTm2=1,Weather=2,Electricity=3}"
+DATASETS="${DATASETS:-}"
+SEEDS="${SEEDS:-}"
 
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export PYTHONPATH="${REPO_ROOT}"
 
-exec conda run --no-capture-output -n NsDiff python \
+command=(conda run --no-capture-output -n NsDiff python \
     "${REPO_ROOT}/src/analysis/run_mean_only_ablation.py" \
     --repo-root "${REPO_ROOT}" \
     --config "${CONFIG_PATH}" \
@@ -23,4 +25,15 @@ exec conda run --no-capture-output -n NsDiff python \
     --checkpoints "${CHECKPOINTS}" \
     --device "${DEVICE}" \
     --wandb-project "${WANDB_PROJECT}" \
-    --gpu-map "${GPU_MAP}"
+    --gpu-map "${GPU_MAP}")
+
+if [[ -n "${DATASETS}" ]]; then
+    read -r -a selected_datasets <<< "${DATASETS}"
+    command+=(--datasets "${selected_datasets[@]}")
+fi
+
+if [[ -n "${SEEDS}" ]]; then
+    command+=(--seeds "${SEEDS}")
+fi
+
+exec "${command[@]}"

@@ -18,13 +18,11 @@ class EnergyScore(Metric):
         samples = pred.permute(0, 3, 1, 2).flatten(2).double()
         targets = true.flatten(1).double()
         sample_count = samples.shape[1]
-        score = torch.zeros((), dtype=torch.float64, device=samples.device)
-        for window_samples, target in zip(samples, targets):
-            first_term = torch.linalg.vector_norm(window_samples - target, dim=1).mean()
-            # pdist contains each unordered pair once; this equals the
-            # conventional double-sum term divided by 2 S^2.
-            pair_term = torch.pdist(window_samples, p=2).sum() / (sample_count ** 2)
-            score += first_term - pair_term
+        first_term = torch.linalg.vector_norm(samples - targets.unsqueeze(1), dim=2).mean(dim=1)
+        # cdist keeps only [B, S, S] distances, avoiding a [B, S, P*D]
+        # broadcast temporary for every ensemble member.
+        pair_term = torch.cdist(samples, samples, p=2).sum(dim=(1, 2)) / (2.0 * sample_count ** 2)
+        score = (first_term - pair_term).sum()
         self.total_score += score.to(self.total_score.device)
         self.total_windows += pred.shape[0]
 

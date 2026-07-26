@@ -64,6 +64,8 @@ def main():
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--wandb-project", default="iReflow-MeanOnly")
     parser.add_argument("--gpu-map", required=True)
+    parser.add_argument("--datasets", nargs="*", default=None)
+    parser.add_argument("--seeds", default=None, help="JSON seed list override, e.g. [2024].")
     args = parser.parse_args()
 
     repo_root = Path(args.repo_root).resolve()
@@ -73,9 +75,23 @@ def main():
         "ablation_mode", "num_sampling_steps", "temperature", "num_samples",
         "x0_dist", "use_relative_space",
     )}
-    seeds = json.dumps(config["seeds"], separators=(",", ","))
+    try:
+        selected_seeds = config["seeds"] if args.seeds is None else json.loads(args.seeds)
+    except json.JSONDecodeError as error:
+        raise SystemExit(f"--seeds must be a JSON list, for example [2024]: {error}") from error
+    if not isinstance(selected_seeds, list) or not selected_seeds or not all(isinstance(seed, int) for seed in selected_seeds):
+        raise SystemExit("--seeds must be a non-empty JSON list of integer seeds.")
+    seeds = json.dumps(selected_seeds, separators=(",", ","))
     gpu_map = parse_gpu_map(args.gpu_map)
-    datasets = config["datasets"]
+    configured_datasets = config["datasets"]
+    configured_names = {dataset["dataset"] for dataset in configured_datasets}
+    selected_names = configured_names if args.datasets is None else set(args.datasets)
+    unknown = selected_names - configured_names
+    if unknown:
+        raise SystemExit(f"Unknown configured dataset(s): {', '.join(sorted(unknown))}")
+    datasets = [dataset for dataset in configured_datasets if dataset["dataset"] in selected_names]
+    if not datasets:
+        raise SystemExit("No datasets selected.")
     missing = [dataset["dataset"] for dataset in datasets if dataset["dataset"] not in gpu_map]
     if missing:
         raise SystemExit(f"GPU map has no assignment for: {', '.join(missing)}")

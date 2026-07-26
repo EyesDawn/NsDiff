@@ -28,6 +28,7 @@ from src.datasets import *
 from torch_timeseries.scaler import *
 from src.metrics import CRPS, CRPSSum, QICE, PICP
 from src.metrics import ProbMAE, ProbMSE, ProbRMSE
+from src.utils.dataset_downloads import configure_idempotent_downloads
 from types import SimpleNamespace
 
 from torch_timeseries.utils.model_stats import count_parameters
@@ -39,6 +40,8 @@ from torch_timeseries.dataloader import SlidingWindowTS, ETTHLoader, ETTMLoader
 from torch_timeseries.experiments import ForecastExp
 from torch_timeseries.utils import asdict_exc
 import torch.multiprocessing as mp
+
+configure_idempotent_downloads()
 
 
 

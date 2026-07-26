@@ -20,6 +20,7 @@ from src.datasets import *
 from torch_timeseries.scaler import *
 from src.metrics import CRPS, CRPSSum, QICE, PICP
 from src.metrics import ProbMAE, ProbMSE, ProbRMSE
+from src.utils.dataset_downloads import configure_idempotent_downloads
 
 from torch_timeseries.utils.model_stats import count_parameters
 from torch_timeseries.utils.early_stop import EarlyStopping
@@ -34,6 +35,9 @@ try:
 except:
     print("Warning: wandb is not installed, some funtionality may not work.")
 
+
+
+configure_idempotent_downloads()
 
 
 def update_metrics(preds, truths, metrics):

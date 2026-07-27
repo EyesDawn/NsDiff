@@ -39,7 +39,7 @@ CLASS_REGISTRY: Dict[str, str] = {
 }
 CHECKPOINT_NAMES = ("best_model.pth",)
 TRAIN_MODE_DIRS = ("train_mode_2", "train_mode_1")
-SIGMA_EPS = 1e-6
+SIGMA_EPS = 0.01
 CSV_COLUMNS = [
     "data",
     "seed",

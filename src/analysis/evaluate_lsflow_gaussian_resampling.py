@@ -43,6 +43,7 @@ CLASS_REGISTRY: Dict[str, str] = {
     "iReflow": "src.experiments.iReflow:iReflowExp",
     "PDN-Flow": "src.experiments.iReflow:iReflowExp",
     "LS-Flow": "src.experiments.iReflow:iReflowExp",
+    "iReflow_DLinear": "src.experiments.iReflow_DLinear:iReflowDLinearExp",
 }
 
 DEFAULT_DATASETS = ("ETTh1", "ETTh2", "Weather", "Electricity")
